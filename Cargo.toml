@@ -30,8 +30,8 @@ publish = false
 victory-core = { path = "crates/victory-core" }
 victory-pe = { path = "crates/victory-pe" }
 victory-loader = { path = "crates/victory-loader" }
-victory-hle = { path = "crates/victory-hle" }
-victory-gpu = { path = "crates/victory-gpu" }
+victory-hle = { path = "crates/victory-hle", default-features = false }
+victory-gpu = { path = "crates/victory-gpu", default-features = false }
 victory-shader = { path = "crates/victory-shader" }
 victory-formats = { path = "crates/victory-formats" }
 victory-pipeline = { path = "crates/victory-pipeline" }

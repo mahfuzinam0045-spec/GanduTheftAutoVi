@@ -15,7 +15,7 @@ victory-hle.workspace = true
 victory-shader = { workspace = true, features = ["host"] }
 victory-formats.workspace = true
 victory-game.workspace = true
-xcl.workspace = true
+xcl = { workspace = true, optional = true }
 anyhow.workspace = true
 blake3.workspace = true
 memchr.workspace = true
@@ -23,6 +23,10 @@ clap.workspace = true
 walkdir.workspace = true
 
 [features]
+default = ["xcl-bridge"]
+# Delegate to XCL CLI/runtime tools and shader fallback (links GPL-2.0-only `xcl`).
+# Disable with `--no-default-features` for a pure GPL-3.0-or-later build.
+xcl-bridge = ["dep:xcl", "victory-hle/xcl-shaders"]
 # Debug-level logs and the debugging switches (frame capture, stack dumps,
 # the host debug layer, scripted keys). Off in a plain release build.
 diagnostics = [

@@ -49,6 +49,8 @@ windows-core = { workspace = true, optional = true }
 tempfile.workspace = true
 
 [features]
+default = ["xcl-shaders"]
+xcl-shaders = ["victory-gpu/xcl-shaders"]
 # Debugging switches (scripted keys and the like).
 diagnostics = ["victory-gpu/diagnostics", "victory-loader/diagnostics", "dep:windows", "dep:windows-core"]
 

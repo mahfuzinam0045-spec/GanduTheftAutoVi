@@ -173,7 +173,7 @@ enum Console {
 }
 
 fn main() -> Result<()> {
-    #[cfg(windows)]
+    #[cfg(all(windows, feature = "xcl-bridge"))]
     if let Some(boot) = std::env::var_os("XCL_HOST") {
         // SAFETY: Called at the very start of `main` before any worker threads are spawned.
         unsafe { std::env::remove_var("XCL_HOST") };
@@ -232,6 +232,7 @@ fn main() -> Result<()> {
 
 /// Point XCL's DXIL disk cache at VIctory's configured `shaders` cache directory
 /// unless the user already set `XCL_DXIL_CACHE`.
+#[cfg(feature = "xcl-bridge")]
 fn configure_shared_shader_cache() {
     if std::env::var_os("XCL_DXIL_CACHE").is_some() {
         return;
@@ -244,6 +245,7 @@ fn configure_shared_shader_cache() {
     }
 }
 
+#[cfg(feature = "xcl-bridge")]
 fn run_xcl_backend(exe: &std::path::Path, execute: bool, title_args: &[String]) -> Result<()> {
     configure_shared_shader_cache();
     let code = if execute {
@@ -255,6 +257,12 @@ fn run_xcl_backend(exe: &std::path::Path, execute: bool, title_args: &[String]) 
     Ok(())
 }
 
+#[cfg(not(feature = "xcl-bridge"))]
+fn run_xcl_backend(_exe: &std::path::Path, _execute: bool, _title_args: &[String]) -> Result<()> {
+    anyhow::bail!("victory was built without the `xcl-bridge` feature")
+}
+
+#[cfg(feature = "xcl-bridge")]
 fn run_xcl_action(action: XclAction) -> Result<()> {
     configure_shared_shader_cache();
     let code = match action {
@@ -294,6 +302,11 @@ fn run_xcl_action(action: XclAction) -> Result<()> {
     };
     anyhow::ensure!(code == 0, "xcl command exited with code {code}");
     Ok(())
+}
+
+#[cfg(not(feature = "xcl-bridge"))]
+fn run_xcl_action(_action: XclAction) -> Result<()> {
+    anyhow::bail!("victory was built without the `xcl-bridge` feature")
 }
 
 fn show_config() -> Result<()> {
