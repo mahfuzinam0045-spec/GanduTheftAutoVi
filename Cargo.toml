@@ -15,6 +15,13 @@ exclude = ["tests/fixtures"]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
+# Per-crate licenses:
+# - `crates/victory-*`, `apps/victory`, `xtask`: GPL-3.0-or-later
+# - `crates/xcl`, `tests/xcl/*`: GPL-2.0-only
+# - `crates/gdk-table`: MIT OR Apache-2.0
+# Note: GPL-2.0-only and GPL-3.0-or-later are link-incompatible for
+# distribution in a single binary; build `victory-gpu` with
+# `--no-default-features` or keep `victory` and `xcl` as separate binaries.
 license = "GPL-3.0-or-later"
 publish = false
 

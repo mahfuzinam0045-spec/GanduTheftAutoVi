@@ -20,6 +20,10 @@ victory-shader.workspace = true
 tempfile.workspace = true
 
 [features]
+default = ["xcl-shaders"]
+# Use XCL's RDNA2/DXIL shader translator as a fallback (links GPL-2.0-only `xcl`).
+# Disable with `--no-default-features` for a pure GPL-3.0-or-later build.
+xcl-shaders = ["dep:xcl"]
 # Debugging switches (frame capture, the host debug layer, per-draw data).
 diagnostics = []
 
@@ -27,7 +31,7 @@ diagnostics = []
 workspace = true
 
 [target.'cfg(windows)'.dependencies]
-xcl.workspace = true
+xcl = { workspace = true, optional = true }
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_System_Diagnostics_Debug", "Win32_System_Kernel", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Performance", "Win32_System_ProcessStatus", "Win32_System_SystemInformation", "Win32_System_Threading"] }
 windows = { workspace = true, features = [
     "Win32_Graphics_Direct3D",

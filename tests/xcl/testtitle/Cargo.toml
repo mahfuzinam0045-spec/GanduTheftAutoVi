@@ -3,7 +3,7 @@ name = "xcl-testtitle"
 description = "Fake 'console title' used to test XCL. Imports console DLLs (kernelx.dll, xgameruntime.dll, d3d12_xs.dll) and cannot run on plain Windows."
 version.workspace = true
 edition = "2021"
-license.workspace = true
+license = "GPL-2.0-only"
 publish = false
 
 [[bin]]

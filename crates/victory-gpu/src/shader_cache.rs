@@ -99,6 +99,7 @@ fn translate_with_xcl_fallback(container: &[u8]) -> Result<HostShader, String> {
         .or_else(|_| victory_shader::emit::translate(container).map_err(|e| e.to_string()))
 }
 
+#[cfg(feature = "xcl-shaders")]
 fn translate_via_xcl(container: &[u8]) -> Result<HostShader, String> {
     use xcl::gpu::recomp::pso::{self, Stage};
     let parsed = xcl::gpu::xbox::parse(container)
@@ -200,6 +201,11 @@ const STAGES: [HwStage; 8] = [
     HwStage::Ms,
     HwStage::Cs,
 ];
+
+#[cfg(not(feature = "xcl-shaders"))]
+fn translate_via_xcl(_container: &[u8]) -> Result<HostShader, String> {
+    Err("xcl-shaders feature is disabled".to_string())
+}
 
 fn root_code(r: RootType) -> u32 {
     match r {

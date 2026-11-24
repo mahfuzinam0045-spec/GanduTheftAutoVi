@@ -3,7 +3,7 @@ name = "xcl"
 description = "Xbox Series X|S -> Windows compatibility layer (loader + HLE)"
 version.workspace = true
 edition = "2021"
-license.workspace = true
+license = "GPL-2.0-only"
 
 [lib]
 name = "xcl"
