@@ -278,6 +278,9 @@ pub extern "system" fn XMemFree(address: *mut c_void, attributes: u64) {
 /// The system allocator behind [`XMemAlloc`].
 pub extern "system" fn XMemAllocDefault(size: usize, attributes: u64) -> *mut c_void {
     if attributes & ALLOC_32BIT != 0 {
+        if let Some(p) = victory_gpu::uma_alloc(size, 64 << 10) {
+            return p.cast();
+        }
         return XMemVirtualAlloc(
             std::ptr::null_mut(),
             size,
@@ -318,6 +321,9 @@ pub extern "system" fn XMemFreeDefault(address: *mut c_void, attributes: u64) {
     // whole reservation, or a header-prefixed block.
     unsafe {
         if attributes & ALLOC_32BIT != 0 {
+            if victory_gpu::uma_free(address.cast()) {
+                return;
+            }
             VirtualFree(address, 0, MEM_RELEASE);
             return;
         }

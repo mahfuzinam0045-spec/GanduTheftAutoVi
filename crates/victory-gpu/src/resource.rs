@@ -561,6 +561,8 @@ pub(crate) struct Memory {
     /// Set when the memory came from the title's allocator, with these
     /// allocation attributes (it goes back there).
     attributes: Option<u64>,
+    #[cfg(windows)]
+    uma: bool,
 }
 
 pub type AllocRoutine = extern "system" fn(usize, u64) -> *mut c_void;
@@ -624,6 +626,8 @@ impl Memory {
             ptr,
             layout,
             attributes: Some(attributes),
+            #[cfg(windows)]
+            uma: false,
         })
     }
 
@@ -643,18 +647,36 @@ impl Memory {
             .filter(|&(size, _)| size > 0)
             .and_then(|(size, align)| Layout::from_size_align(size, align).ok())
             .ok_or(E_INVALIDARG)?;
+        #[cfg(windows)]
+        if let Some(p) = crate::uma::alloc(layout.size(), layout.align()) {
+            // SAFETY: `uma::alloc` returned `layout.size()` bytes; zero it.
+            unsafe { p.write_bytes(0, layout.size()) };
+            return Ok(Memory {
+                ptr: NonNull::new(p).ok_or(E_OUTOFMEMORY)?,
+                layout,
+                attributes: None,
+                uma: true,
+            });
+        }
         // SAFETY: the size is non-zero.
         let ptr = NonNull::new(unsafe { alloc_zeroed(layout) }).ok_or(E_OUTOFMEMORY)?;
         Ok(Memory {
             ptr,
             layout,
             attributes: None,
+            #[cfg(windows)]
+            uma: false,
         })
     }
 }
 
 impl Drop for Memory {
     fn drop(&mut self) {
+        #[cfg(windows)]
+        if self.uma {
+            crate::uma::free(self.ptr.as_ptr());
+            return;
+        }
         match (self.attributes, ALLOCATOR.get()) {
             (Some(attributes), Some(&(_, free))) => free(self.ptr.as_ptr().cast(), attributes),
             // SAFETY: allocated in `new` with this layout.
@@ -763,6 +785,14 @@ pub(crate) struct HostTexture {
     pub(crate) state: std::sync::atomic::AtomicU32,
 }
 
+#[cfg(windows)]
+impl Drop for HostTexture {
+    fn drop(&mut self) {
+        use windows::core::Interface;
+        crate::vram::forget(self.texture.as_raw() as usize);
+    }
+}
+
 /// Moves the host texture to `wanted` (a host texture state); the host
 /// resource and the state it leaves, if that is a change.
 #[cfg(windows)]
@@ -802,6 +832,7 @@ fn host_texture(
     desc: &ResourceDesc,
     state: u32,
     clear: *const c_void,
+    vram_address: Option<u64>,
 ) -> Option<windows::Win32::Graphics::Direct3D12::ID3D12Resource> {
     use windows::Win32::Graphics::Direct3D12::*;
     const PC_FLAGS: u32 = 0xf; // render target, depth, UAV, no shader access
@@ -842,6 +873,26 @@ fn host_texture(
         value[0] = pc_format(value[0]);
         value
     });
+    let initial_state = crate::host::legal_for(d.flags, crate::host::texture_state(state));
+    if let Some(va) = vram_address
+        && crate::vram::gpu_owned(d.flags)
+    {
+        // SAFETY: `d` has the exact D3D12_RESOURCE_DESC layout.
+        let pc_desc: &D3D12_RESOURCE_DESC = unsafe { &*(&raw const d).cast() };
+        let clear_ref: Option<&D3D12_CLEAR_VALUE> = clear_value
+            .as_ref()
+            // SAFETY: `clear_value` has the exact D3D12_CLEAR_VALUE layout.
+            .map(|v| unsafe { &*std::ptr::from_ref(v).cast() });
+        if let Some(tex) =
+            // SAFETY: `host.device` and `pc_desc` are valid.
+            unsafe { crate::vram::place(&host.device, va as usize, pc_desc, initial_state, clear_ref) }
+        {
+            crate::host::name(&tex, || {
+                format!("vram texture {}x{} f{} flags {:#x} @{va:#x}", d.width, d.height, d.format, d.flags)
+            });
+            return Some(tex);
+        }
+    }
     let heap = D3D12_HEAP_PROPERTIES {
         Type: D3D12_HEAP_TYPE_DEFAULT,
         ..Default::default()
@@ -854,9 +905,7 @@ fn host_texture(
             &heap,
             D3D12_HEAP_FLAG_NONE,
             (&raw const d).cast(),
-            D3D12_RESOURCE_STATES(
-                crate::host::legal_for(d.flags, crate::host::texture_state(state)) as i32,
-            ),
+            D3D12_RESOURCE_STATES(initial_state as i32),
             // The same layout: format, then color or depth and stencil.
             clear_value.as_ref().map(|v| std::ptr::from_ref(v).cast()),
             &mut texture,
@@ -928,7 +977,16 @@ fn hand_out_resource(
     #[cfg(not(windows))]
     let _ = (state, clear);
     #[cfg(windows)]
-    let host = host_texture(&desc, state, clear);
+    let vram_address = match &backing {
+        Backing::Address(at) => Some(*at as u64),
+        Backing::Placed { heap, offset } => {
+            // SAFETY: placement checked the range lies inside the heap.
+            Some(unsafe { (*heap.cast::<Heap>()).memory.address() } + *offset)
+        }
+        Backing::Committed(_) => None,
+    };
+    #[cfg(windows)]
+    let host = host_texture(&desc, state, clear, vram_address);
     let resource = Box::new(Resource {
         object: Object::new(&RESOURCE_FUNCTIONS),
         desc,

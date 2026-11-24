@@ -35,6 +35,13 @@ pub(crate) fn texture_state(state: u32) -> u32 {
 /// ring of host descriptors is enough.
 const RTV_RING: u32 = 1024;
 
+struct UmaWindow {
+    base: u64,
+    size: u64,
+    shadow: std::sync::Arc<crate::shadow::Shadow>,
+    _heap: ID3D12Heap,
+}
+
 pub(crate) struct Host {
     pub(crate) device: ID3D12Device,
     queue: ID3D12CommandQueue,
@@ -53,6 +60,21 @@ pub(crate) struct Host {
     messages: Option<ID3D12InfoQueue>,
     next_rtv: AtomicU32,
     presenter: Mutex<Option<Presenter>>,
+    uma_windows: Vec<UmaWindow>,
+}
+
+impl Host {
+    pub(crate) fn uma_shadow(
+        &self,
+        address: u64,
+        len: u64,
+    ) -> Option<std::sync::Arc<crate::shadow::Shadow>> {
+        let end = address.checked_add(len)?;
+        self.uma_windows
+            .iter()
+            .find(|w| address >= w.base && end <= w.base + w.size)
+            .map(|w| w.shadow.clone())
+    }
 }
 
 // SAFETY: D3D12 devices, queues, fences and descriptor heaps are
@@ -207,6 +229,77 @@ fn create() -> windows::core::Result<Host> {
                 ..Default::default()
             })?;
         let dsv_size = device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+        let mut uma_windows = Vec::new();
+        if let Some(uma) = crate::uma::init_runtime()
+            && let Ok(dev3) = device.cast::<ID3D12Device3>()
+        {
+            for k in 0..crate::uma::MAX_WINDOWS {
+                let (base, size) = uma.window(k);
+                if size == 0 {
+                    continue;
+                }
+                match dev3.OpenExistingHeapFromAddress::<ID3D12Heap>(base as *const std::ffi::c_void)
+                {
+                    Ok(heap) => {
+                        let buf_desc = D3D12_RESOURCE_DESC {
+                            Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
+                            Width: size as u64,
+                            Height: 1,
+                            DepthOrArraySize: 1,
+                            MipLevels: 1,
+                            SampleDesc: DXGI_SAMPLE_DESC {
+                                Count: 1,
+                                Quality: 0,
+                            },
+                            Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+                            Flags: D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS
+                                | D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER,
+                            ..Default::default()
+                        };
+                        let mut buf: Option<ID3D12Resource> = None;
+                        match device.CreatePlacedResource(
+                            &heap,
+                            0,
+                            &buf_desc,
+                            D3D12_RESOURCE_STATE_COMMON,
+                            None,
+                            &mut buf,
+                        ) {
+                            Ok(()) => {
+                                if let Some(buf) = buf {
+                                    let gpu_va = buf.GetGPUVirtualAddress();
+                                    name(&buf, || format!("UMA window {k} ({base:#x}+{size:#x})"));
+                                    let shadow = std::sync::Arc::new(
+                                        crate::shadow::Shadow::new_uma(
+                                            buf,
+                                            base as *mut u8,
+                                            gpu_va,
+                                            base as u64,
+                                            size as u64,
+                                        ),
+                                    );
+                                    uma_windows.push(UmaWindow {
+                                        base: base as u64,
+                                        size: size as u64,
+                                        shadow,
+                                        _heap: heap,
+                                    });
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(window = k, error = %e, "UMA CreatePlacedResource failed");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(window = k, error = %e, "UMA OpenExistingHeapFromAddress failed");
+                    }
+                }
+            }
+            if !uma_windows.is_empty() {
+                tracing::info!(windows = uma_windows.len(), "D3D12 UMA windows mapped");
+            }
+        }
         tracing::info!("host D3D12 device ready");
         Ok(Host {
             device,
@@ -222,6 +315,7 @@ fn create() -> windows::core::Result<Host> {
             messages,
             next_rtv: AtomicU32::new(0),
             presenter: Mutex::new(None),
+            uma_windows,
         })
     }
 }
@@ -529,6 +623,7 @@ impl Host {
             let started = std::time::Instant::now();
             // SAFETY: closed lists; the fence and event are ours.
             unsafe {
+                crate::vram::before_execute(&self.queue);
                 self.queue.ExecuteCommandLists(group);
                 let waited = self
                     .queue

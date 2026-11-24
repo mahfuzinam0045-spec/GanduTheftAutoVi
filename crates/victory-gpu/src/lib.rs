@@ -50,9 +50,15 @@ pub mod signature;
 #[cfg(windows)]
 mod texture;
 #[cfg(windows)]
+pub mod uma;
+#[cfg(windows)]
+pub mod vram;
+#[cfg(windows)]
 mod watch;
 
 #[cfg(windows)]
 pub use host::on_failure;
+#[cfg(windows)]
+pub use uma::{alloc as uma_alloc, contains as uma_contains, free as uma_free};
 #[cfg(windows)]
 pub use watch::{title_memory_remapped, writing as kernel_will_write};
