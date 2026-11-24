@@ -2094,4 +2094,15 @@ pub(crate) mod tests {
         assert!(d24.decode_packet(&[0xFB, 0], &mut out24).is_err());
         assert_eq!(d24.decode_packet(MONO_HYBRID_20MS[1], &mut out24).unwrap(), 480);
     }
+
+    #[test]
+    fn pure_decoder_decodes_mono_hybrid_packet() {
+        let mut dec = PureDecoder::new(1, 48_000).unwrap();
+        let mut out = Vec::new();
+        let frames = dec.decode_packet(MONO_HYBRID_20MS[0], &mut out).unwrap();
+        assert_eq!(frames, 960);
+        assert_eq!(out.len(), 960);
+        dec.flush();
+        assert_eq!(dec.timestamp_100ns, 0);
+    }
 }

@@ -68,6 +68,15 @@ pub fn lookup_gdk_name(provider: Guid, interface: Guid, slot: usize) -> Option<&
     gdk_table::lookup(provider.to_u128(), interface.to_u128(), slot)
 }
 
+/// Return the first known GDK function name for a `(provider, interface)` pair, if any.
+pub fn lookup_gdk_area(provider: Guid, interface: Guid) -> Option<&'static str> {
+    let (p, i) = (provider.to_u128(), interface.to_u128());
+    gdk_table::API
+        .iter()
+        .find(|&&(_, c, iid, _)| c == p && iid == i)
+        .map(|&(name, _, _, _)| name)
+}
+
 impl std::fmt::Display for Guid {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let d = self.data4;
@@ -268,7 +277,8 @@ pub extern "system" fn QueryApiImpl(
     let mut queried = QUERIED.lock().unwrap_or_else(|e| e.into_inner());
     if !queried.contains(&(provider, iid)) {
         queried.push((provider, iid));
-        tracing::warn!(%provider, %iid, "runtime API area not implemented");
+        let gdk_hint = lookup_gdk_area(provider, iid).unwrap_or("unknown");
+        tracing::warn!(%provider, %iid, gdk_hint, "runtime API area not implemented");
     }
     NOT_SUPPORTED
 }
