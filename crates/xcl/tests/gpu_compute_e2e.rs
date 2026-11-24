@@ -110,11 +110,8 @@ fn offline_compute_pipeline_is_reused_by_a_second_process() {
     run(false);
     assert!(!cache.join("driver").exists());
     run(true);
-    let dxil_file = fs::read_dir(&cache).unwrap().flatten().map(|e| e.path())
-        .find(|p| p.extension().is_some_and(|ext| ext == "dxil")).unwrap();
-    let dxil = fs::read(dxil_file).unwrap();
-    let name = format!("{:016x}-{:x}-0.pso", xcl::gpu::shader::fnv64(&dxil), dxil.len());
-    let driver_file = cache.join("driver").join(name);
+    let driver_file = fs::read_dir(cache.join("driver")).unwrap().flatten().map(|e| e.path())
+        .find(|p| p.extension().is_some_and(|ext| ext == "pso")).unwrap();
     assert!(driver_file.metadata().unwrap().len() > 0);
     let warm = run(true);
     // A blob from an earlier driver can be refused. The normal build must still succeed.

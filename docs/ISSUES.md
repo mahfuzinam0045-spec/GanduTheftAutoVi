@@ -14,9 +14,13 @@ Tracked issues for the merged **VIctory + XCL** workspace (`shadshuvo/GanduTheft
 - **Problem:** `crates/xcl/src/hle/xgameruntime/` and `crates/victory-hle/src/modules/xgameruntime.rs` duplicate runtime services, as do the `xma2` / `opus` decoders. (`gdk-table` was extracted in `32140c5`, but full consolidation is still in progress.)
 - **Action:** Finish unifying onto a single shared GDK runtime and audio decoder implementation.
 
-### #13 — Missing `tests/xcl/data/**/*.bin` Synthetic Test Fixtures
-- **Problem:** `cargo test -p xcl --lib` fails on `hle::bcpack::tests::fixtures_decode_to_their_lanes` (`crates/xcl/src/hle/bcpack/tests.rs:37`) because the 14 synthetic `.bin` fixtures in `tests/xcl/data/bcpack/` (15 `.bin` files total in `upstream/xcl/tests/data/`) were excluded by `.gitignore`'s `*.bin` rule during the merge, even though `xtask/src/policy.rs` already exempts `tests/xcl/`.
-- **Action:** Add `!/tests/xcl/data/**/*.bin` to `.gitignore` and restore the synthetic `.bin` test fixtures.
+### #13 — Missing `tests/xcl/data/bcpack/*.bin` Synthetic Test Fixtures
+- **Problem:** `cargo test -p xcl --lib` fails on `hle::bcpack::tests::fixtures_decode_to_their_lanes` (`crates/xcl/src/hle/bcpack/tests.rs:37`) because the 14 synthetic `.bin` fixtures in `tests/xcl/data/bcpack/` are missing. (`.gitignore` `!/tests/xcl/data/**/*.bin` and `tests/xcl/data/testgame/data/sub/nested.bin` have been restored, fixing `xcl --test e2e`.)
+- **Action:** Run `python tests/xcl/data/bcpack/generate.py` in an environment with Python 3 and commit the 14 generated `.bin` files.
+
+### #14 — Workspace Clippy Warnings Backlog
+- **Problem:** `cargo clippy --workspace --all-targets` emits warnings across several crates: `xcl` (466 lib / 660 lib-test), `xcl-testtitle` (20), `victory-formats` (6), `victory-gpu` (3), and `testgame-mw` (1).
+- **Action:** Clean up clippy warnings (e.g., `missing_safety_doc`, `unnecessary_map_or`, `useless_vec`, `precedence`, `manual_contains`) across the workspace.
 
 ---
 
@@ -31,3 +35,4 @@ Tracked issues for the merged **VIctory + XCL** workspace (`shadshuvo/GanduTheft
 - **#10** — Gated `xcl` behind `xcl-bridge` in `apps/victory/Cargo.toml` (`de24fc8`).
 - **#11** — Added `verify_uma_import()` GPU readback check on UMA initialization in `victory-gpu/src/host.rs` (`88a172a`).
 - **#12** — Preserved `DepthBoundsTestEnable` via `D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL1` stream in `pipeline/host.rs` (`88a172a`).
+- **Workspace Audit Fixes** — Replaced `6.283_185_3` with `std::f32::consts::TAU` in `gpu/dxil/lower_valu.rs` and `lower_wide.rs` (unblocking `cargo clippy --workspace --all-targets`), updated `gpu_compute_e2e` (`offline_compute_pipeline_is_reused_by_a_second_process`) to inspect `cache/driver/*.pso` directly when direct DXIL skips DXC's `.dxil` cache, added `!/tests/xcl/data/**/*.bin` to `.gitignore`, and restored `tests/xcl/data/testgame/data/sub/nested.bin`.
