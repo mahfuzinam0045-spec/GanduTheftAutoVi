@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  # ── VIctory: clippy + full test suite ──────────────────────────────────────
+  victory:
+    name: VIctory (clippy + tests)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      # Toolchain version + components are pinned in rust-toolchain.toml
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Clippy (diagnostics build)
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      # Includes xtask's repository_passes_policy (asset-policy check)
+      - name: Tests
+        run: cargo test --workspace --locked
+
+  # ── XCL: build + unit/integration tests (no GPU, no game data on runner) ───
+  #
+  # GPU tests are automatically skipped when no hardware adapter is present.
+  # The test title end-to-end test is excluded because GitHub runners have
+  # no Gaming Services (xgameruntime.dll) and only the Microsoft Basic Render Driver.
+  xcl:
+    name: XCL (build + tests, no GPU)
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust (stable, MSVC)
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('**/Cargo.toml') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Build xcl
+        run: cargo build -p xcl --locked
+
+      - name: Test xcl
+        run: cargo test -p xcl --locked
+
+      - name: Build xcl testtitle
+        run: cargo build -p xcl-testtitle --locked
