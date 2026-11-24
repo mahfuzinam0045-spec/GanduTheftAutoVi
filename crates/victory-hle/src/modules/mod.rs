@@ -21,6 +21,8 @@ pub mod files;
 pub mod gameinput;
 pub mod kernel;
 #[cfg(windows)]
+pub mod lazy;
+#[cfg(windows)]
 pub mod lifecycle;
 #[cfg(windows)]
 pub mod media;

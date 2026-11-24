@@ -727,7 +727,13 @@ fn map(physical: &mut Physical, base: usize, len: usize, slice: Slice) -> bool {
         );
         return false;
     }
-    if !commit(base, len) {
+    let lazy = !on_wine()
+        && std::env::var_os("VICTORY_LAZY_PAGES").is_none_or(|v| v != "0");
+    if lazy {
+        for p in (base..base + len).step_by(PAGE) {
+            crate::modules::lazy::mark(p);
+        }
+    } else if !commit(base, len) {
         // SAFETY: the view just mapped, back to a placeholder.
         unsafe { UnmapViewOfFile2(GetCurrentProcess(), view, MEM_PRESERVE_PLACEHOLDER) };
         return false;
@@ -812,6 +818,9 @@ fn unmap(physical: &mut Physical, base: usize, len: usize) {
         let Some((size, slice)) = physical.views.remove(&at) else {
             continue;
         };
+        for p in (at..at + size).step_by(PAGE) {
+            crate::modules::lazy::unmark(p);
+        }
         victory_gpu::title_memory_remapped(at, size);
         // SAFETY: a view we mapped; it becomes a placeholder again.
         unsafe {
@@ -1133,6 +1142,8 @@ mod tests {
         // SAFETY: both pages are mapped read-write.
         unsafe { a.cast::<u8>().write(5) };
         let second = a.wrapping_byte_add(PAGE);
+        // SAFETY: touch `second` so lazy-committed pages are committed before `VirtualQuery`.
+        unsafe { std::ptr::read_volatile(second.cast::<u8>()) };
 
         // A count of 0 at the start of a view, inside it and past it: with
         // pages, without (an unmap), and as the GPU's page-mapping copy.

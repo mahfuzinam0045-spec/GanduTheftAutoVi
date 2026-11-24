@@ -148,17 +148,52 @@ unsafe fn emulate_amd_only(info: *mut EXCEPTION_POINTERS) -> bool {
             return false;
         }
         let code = context.Rip as *const u8;
+        let room = 0x1000 - (context.Rip as usize & 0xfff);
+        let mut bytes = [0u8; 32];
+        let n = room.min(bytes.len());
+        std::ptr::copy_nonoverlapping(code, bytes.as_mut_ptr(), n);
+        // `clzero; add rax, 0x40; cmp rax, <reg>; jb -12` — zero [rax..end) in one exception.
+        if n >= 12
+            && bytes[..7] == [0x0f, 0x01, 0xfc, 0x48, 0x83, 0xc0, 0x40]
+            && (bytes[7] == 0x48 || bytes[7] == 0x4c)
+            && bytes[8] == 0x39
+            && (bytes[9] & 0xc7) == 0xc0
+            && bytes[10..12] == [0x72, 0xf4]
+        {
+            let end_reg = ((bytes[9] >> 3) & 7) | if bytes[7] == 0x4c { 8 } else { 0 };
+            let end = *gpr(context, end_reg);
+            if end_reg != 0 && context.Rax < end {
+                let mut cur = context.Rax;
+                while cur < end {
+                    ((cur & !63) as *mut u8).write_bytes(0, 64);
+                    cur = cur.wrapping_add(0x40);
+                }
+                context.Rax = cur;
+                let flags = cmp_flags(cur, end);
+                context.EFlags = context.EFlags & !CMP_FLAGS | flags;
+                context.Rip += 12;
+                return true;
+            }
+        }
         match code.cast::<[u8; 3]>().read_unaligned() {
             [0x0f, 0x01, 0xfc] => ((context.Rax & !63) as *mut u8).write_bytes(0, 64),
+            [0x0f, 0x01, 0xfd] => {
+                // `rdpru`: ecx = 0 MPERF / 1 APERF -> edx:eax
+                let mut qpc = 0i64;
+                windows_sys::Win32::System::Performance::QueryPerformanceCounter(&mut qpc);
+                context.Rax = (qpc as u64) & 0xffff_ffff;
+                context.Rdx = (qpc as u64) >> 32;
+            }
             [0x0f, 0x01, 0xfa] => {}
             [0x0f, 0x01, 0xfb] => std::thread::yield_now(),
             _ => {
-                // Only bytes inside the faulting instruction's page are read: the next page may
-                // not be mapped.
-                let room = 0x1000 - (context.Rip as usize & 0xfff);
-                let mut bytes = [0u8; 32];
-                let n = room.min(bytes.len());
-                std::ptr::copy_nonoverlapping(code, bytes.as_mut_ptr(), n);
+                if let Some((reg, len)) = rdpid_reg(&bytes[..n]) {
+                    *gpr(context, reg) = u64::from(
+                        windows_sys::Win32::System::Threading::GetCurrentProcessorNumber(),
+                    );
+                    context.Rip += len as u64;
+                    return true;
+                }
                 if let Some(pass) = clwb_loop(&bytes[..n]) {
                     // A whole write-back loop in one exception (see `clwb_loop`).
                     let limit = *gpr(context, pass.limit);
@@ -190,6 +225,29 @@ unsafe fn emulate_amd_only(info: *mut EXCEPTION_POINTERS) -> bool {
         context.Rip += 3;
     }
     true
+}
+
+/// `rdpid r64` (`F3 [REX] 0F C7 /7`): returns `(register_index, instruction_len)`.
+fn rdpid_reg(code: &[u8]) -> Option<(u8, usize)> {
+    if *code.first()? != 0xf3 {
+        return None;
+    }
+    let mut i = 1;
+    let mut rex = 0u8;
+    if code.get(i).is_some_and(|&b| b & 0xf0 == 0x40) {
+        rex = code[i];
+        i += 1;
+    }
+    if *code.get(i)? != 0x0f || *code.get(i + 1)? != 0xc7 {
+        return None;
+    }
+    let modrm = *code.get(i + 2)?;
+    if (modrm >> 6) == 3 && ((modrm >> 3) & 7) == 7 {
+        let reg = (modrm & 7) | if rex & 1 != 0 { 8 } else { 0 };
+        Some((reg, i + 3))
+    } else {
+        None
+    }
 }
 
 /// `clwb m8` (`66 [rex] 0f ae /6`, a memory operand), which Intel CPUs before
