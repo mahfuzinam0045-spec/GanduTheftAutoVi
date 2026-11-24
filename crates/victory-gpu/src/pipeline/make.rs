@@ -95,7 +95,21 @@ pub(crate) fn missing(p: &Pending) -> Option<String> {
 static DONE: (Mutex<()>, Condvar) = (Mutex::new(()), Condvar::new());
 
 /// Waiting allowed per title frame, over all threads.
-const BUDGET: Duration = Duration::from_millis(500);
+fn wait_budget_from(val: Option<&str>) -> Duration {
+    let millis = val
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(500);
+    Duration::from_millis(millis)
+}
+
+fn wait_budget() -> Duration {
+    static BUDGET: OnceLock<Duration> = OnceLock::new();
+    *BUDGET.get_or_init(|| {
+        let d = wait_budget_from(std::env::var("VICTORY_PIPELINE_WAIT_MS").ok().as_deref());
+        tracing::info!(millis = d.as_millis() as u64, "host pipeline wait budget per frame");
+        d
+    })
+}
 
 /// Pipelines queued and not made yet.
 static WAITING: AtomicU64 = AtomicU64::new(0);
@@ -108,15 +122,16 @@ pub(crate) fn waiting() -> u64 {
 /// The host pipeline if it is made (or is made within the frame's budget);
 /// queues it on first use.
 pub(crate) fn ready(p: &Arc<Pending>) -> Option<&HostPipeline> {
+    // Record requested pipelines even if still pending so the next launch
+    // prewarms them early.
+    if !p.used.swap(true, Ordering::Relaxed) {
+        super::library::note_used(&p.key);
+    }
     if p.made.get().is_none() {
         start(p);
         wait(p, crate::frame::current());
     }
-    let made = p.made.get()?.as_ref();
-    if made.is_some() && !p.used.swap(true, Ordering::Relaxed) {
-        super::library::note_used(&p.key);
-    }
-    made
+    p.made.get()?.as_ref()
 }
 
 /// Queues `p` for the workers, once.
@@ -138,12 +153,16 @@ pub(crate) fn early(p: &Arc<Pending>) {
 
 /// Waits for `p` while frame `frame` has budget left.
 fn wait(p: &Pending, frame: u64) {
+    let budget = wait_budget();
+    if budget.is_zero() {
+        return;
+    }
     static FRAME: AtomicU64 = AtomicU64::new(u64::MAX);
     static WAITED_US: AtomicU64 = AtomicU64::new(0);
     if FRAME.swap(frame, Ordering::Relaxed) != frame {
         WAITED_US.store(0, Ordering::Relaxed);
     }
-    let left = BUDGET.saturating_sub(Duration::from_micros(WAITED_US.load(Ordering::Relaxed)));
+    let left = budget.saturating_sub(Duration::from_micros(WAITED_US.load(Ordering::Relaxed)));
     let started = Instant::now();
     let (lock, done) = &DONE;
     let mut held = lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -234,5 +253,13 @@ mod tests {
             std::thread::yield_now();
         }
         assert!(matches!(p.made.get(), Some(None)));
+    }
+
+    #[test]
+    fn wait_budget_parses_env_values() {
+        assert_eq!(wait_budget_from(None), Duration::from_millis(500));
+        assert_eq!(wait_budget_from(Some("0")), Duration::ZERO);
+        assert_eq!(wait_budget_from(Some(" 125 ")), Duration::from_millis(125));
+        assert_eq!(wait_budget_from(Some("bad")), Duration::from_millis(500));
     }
 }
