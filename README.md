@@ -100,6 +100,10 @@ victory xcl inspect <file.exe>
 victory xcl disasm <shader_file>
 victory xcl shaders <path_or_rpf>
 victory xcl rpf <archive.rpf>
+
+# Pre-compile shaders into the shared DXIL cache before launching
+victory xcl warmup <game_dir_or_rpf> --limit 0
+victory xcl cache-stats
 ```
 
 ---

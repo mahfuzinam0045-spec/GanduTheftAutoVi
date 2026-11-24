@@ -149,6 +149,15 @@ enum XclAction {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Pre-compile shaders into the shared DXIL disk cache to eliminate runtime stutter.
+    Warmup {
+        path: PathBuf,
+        /// Maximum number of shaders to compile (`0` = all complete translations).
+        #[arg(long, default_value_t = 0)]
+        limit: usize,
+    },
+    /// Show XCL DXIL shader cache directory and process hit/miss statistics.
+    CacheStats,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -221,7 +230,22 @@ fn main() -> Result<()> {
     }
 }
 
+/// Point XCL's DXIL disk cache at VIctory's configured `shaders` cache directory
+/// unless the user already set `XCL_DXIL_CACHE`.
+fn configure_shared_shader_cache() {
+    if std::env::var_os("XCL_DXIL_CACHE").is_some() {
+        return;
+    }
+    if let Ok(cfg) = victory_core::Config::load()
+        && let Ok(dir) = cfg.cache_subdir("shaders")
+    {
+        // SAFETY: Called on the main CLI thread before spawning XCL child processes or workers.
+        unsafe { std::env::set_var("XCL_DXIL_CACHE", dir) };
+    }
+}
+
 fn run_xcl_backend(exe: &std::path::Path, execute: bool, title_args: &[String]) -> Result<()> {
+    configure_shared_shader_cache();
     let code = if execute {
         xcl::launcher::run(exe, title_args)
     } else {
@@ -232,11 +256,41 @@ fn run_xcl_backend(exe: &std::path::Path, execute: bool, title_args: &[String]) 
 }
 
 fn run_xcl_action(action: XclAction) -> Result<()> {
+    configure_shared_shader_cache();
     let code = match action {
         XclAction::Inspect { file, json } => xcl::inspect::run(&file, json),
         XclAction::Disasm { file, args } => xcl::disasm::run(&file, &args),
         XclAction::Shaders { path, args } => xcl::shaders::run(&path, &args),
         XclAction::Rpf { archive, args } => xcl::rpf::run(&archive, &args),
+        XclAction::Warmup { path, limit } => {
+            let args = vec![
+                "--recomp".to_owned(),
+                "--compile".to_owned(),
+                limit.to_string(),
+            ];
+            let code = xcl::shaders::run(&path, &args);
+            let stats = xcl::gpu::recomp::dxc::cache_stats();
+            println!(
+                "dxil cache ({}): hits={}, misses={}, compilations={}, failures={}",
+                xcl::gpu::recomp::dxc::cache_dir().display(),
+                stats.hits,
+                stats.misses,
+                stats.compilations,
+                stats.compilation_failures,
+            );
+            code
+        }
+        XclAction::CacheStats => {
+            let stats = xcl::gpu::recomp::dxc::cache_stats();
+            println!("dxil cache dir  : {}", xcl::gpu::recomp::dxc::cache_dir().display());
+            println!("hits            : {}", stats.hits);
+            println!("misses          : {}", stats.misses);
+            println!("coalesced hits  : {}", stats.coalesced_hits);
+            println!("deferred misses : {}", stats.deferred_misses);
+            println!("compilations    : {}", stats.compilations);
+            println!("failures        : {}", stats.compilation_failures);
+            0
+        }
     };
     anyhow::ensure!(code == 0, "xcl command exited with code {code}");
     Ok(())
@@ -322,6 +376,23 @@ mod tests {
             cli.command,
             Command::Xcl {
                 action: XclAction::Inspect { json: true, .. }
+            }
+        ));
+
+        let warmup = Cli::try_parse_from(["victory", "xcl", "warmup", "shaders.rpf", "--limit", "64"])
+            .unwrap();
+        assert!(matches!(
+            warmup.command,
+            Command::Xcl {
+                action: XclAction::Warmup { limit: 64, .. }
+            }
+        ));
+
+        let stats = Cli::try_parse_from(["victory", "xcl", "cache-stats"]).unwrap();
+        assert!(matches!(
+            stats.command,
+            Command::Xcl {
+                action: XclAction::CacheStats
             }
         ));
     }

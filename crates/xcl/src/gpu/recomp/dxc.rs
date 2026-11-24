@@ -646,6 +646,19 @@ pub fn compile_cached_in(dir: &Path, src: &str, entry: &str, profile: &str) -> R
 
 type CacheFlight = (PathBuf, u64);
 
+fn mem_cache() -> &'static Mutex<HashMap<CacheFlight, Vec<u8>>> {
+    static MEM: OnceLock<Mutex<HashMap<CacheFlight, Vec<u8>>>> = OnceLock::new();
+    MEM.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn mem_cache_get(key: &CacheFlight) -> Option<Vec<u8>> {
+    mem_cache().lock().unwrap_or_else(|e| e.into_inner()).get(key).cloned()
+}
+
+fn mem_cache_put(key: CacheFlight, dxil: Vec<u8>) {
+    mem_cache().lock().unwrap_or_else(|e| e.into_inner()).insert(key, dxil);
+}
+
 fn cache_flight(key: CacheFlight) -> Arc<Mutex<()>> {
     static FLIGHTS: OnceLock<Mutex<HashMap<CacheFlight, Weak<Mutex<()>>>>> = OnceLock::new();
     let mut flights = FLIGHTS.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap();
@@ -785,8 +798,14 @@ where
 {
     let key = cache_key(src, entry, profile);
     let dir = normalized_cache_dir(dir);
+    let mem_key = (dir.clone(), key);
+    if let Some(b) = mem_cache_get(&mem_key) {
+        counters.hits.fetch_add(1, Ordering::Relaxed);
+        return Ok((b, true));
+    }
     let file = dir.join(format!("{key:016x}.dxil"));
     if let Some(b) = cached_file(&file) {
+        mem_cache_put(mem_key, b.clone());
         counters.hits.fetch_add(1, Ordering::Relaxed);
         return Ok((b, true));
     }
@@ -803,6 +822,7 @@ where
     let _process_guard = process_cache_lock(&file)?;
     // Another caller may have populated the cache while this one waited.
     if let Some(b) = cached_file(&file) {
+        mem_cache_put(mem_key, b.clone());
         counters.coalesced_hits.fetch_add(1, Ordering::Relaxed);
         return Ok((b, true));
     }
@@ -837,6 +857,7 @@ where
             let _ = std::fs::remove_file(&tmp);
         }
     }
+    mem_cache_put(mem_key, b.clone());
     Ok((b, false))
 }
 
