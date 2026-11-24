@@ -117,7 +117,11 @@ fn translate_via_xcl(container: &[u8]) -> Result<HostShader, String> {
         7 => (HwStage::Ms, Stage::Compute),
         other => return Err(format!("unsupported hw stage {other} for XCL fallback")),
     };
-    let compiled = pso::console_to_dxil_for(container, xcl_stage, 0, false)?;
+    let split_wave64 = crate::host::host().is_some_and(|h| match xcl_stage {
+        Stage::Compute => pso::wave32_only_for_device(&h.device),
+        Stage::Vertex | Stage::Pixel => pso::graphics_wave32_for_device(&h.device),
+    });
+    let compiled = pso::console_to_dxil_for(container, xcl_stage, 0, split_wave64)?;
     let samplers: Vec<[u32; 4]> = compiled.samplers.iter().map(|&(w, _)| w).collect();
     let static_samplers = samplers.iter().copied().map(StaticSampler::from_words).collect();
     Ok(HostShader {

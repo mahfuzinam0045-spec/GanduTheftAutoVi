@@ -111,6 +111,18 @@ pub extern "system" fn XMemVirtualAlloc(
     // (Grand Theft Auto VI's 23 calls never do); replace that part of the
     // placeholder then.
     let placeholder = kind & PAGES_64K == PAGES_64K && kind & MEM_COMMIT == 0;
+    if base.is_null() && !placeholder && (kind & MEM_COMMIT != 0) && (flags & GRAPHICS != 0) {
+        let align = if kind & (PAGES_2M | PAGES_64K_BIT) == PAGES_2M {
+            2 * MIB
+        } else {
+            64 << 10
+        };
+        if let Some(p) = victory_gpu::uma_alloc(size, align) {
+            // SAFETY: `uma_alloc` returned `size` bytes; zero them like `VirtualAlloc`.
+            unsafe { p.write_bytes(0, size) };
+            return p.cast();
+        }
+    }
     if placeholder {
         if kind & MEM_REPLACE_PLACEHOLDER != 0 {
             // Part of a placeholder the title split: it stays one.

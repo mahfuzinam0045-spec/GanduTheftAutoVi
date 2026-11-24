@@ -697,10 +697,10 @@ pub(crate) fn forget(resource: usize) {
         .as_mut()
         .and_then(|m| m.remove(&resource))
     {
-        ARENAS
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .release(id, std::time::Instant::now());
+        let now = std::time::Instant::now();
+        let mut arenas = ARENAS.lock().unwrap_or_else(|e| e.into_inner());
+        arenas.release(id, now);
+        arenas.sweep(now);
     }
     let mut g = PAGES.lock().unwrap_or_else(|e| e.into_inner());
     let now = std::time::Instant::now();

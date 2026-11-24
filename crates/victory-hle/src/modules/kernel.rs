@@ -350,6 +350,16 @@ fn refuse(file: &str) {
 
 const ERROR_MOD_NOT_FOUND: u32 = 126;
 
+#[cfg(windows)]
+pub extern "system" fn VirtualFree(address: *mut c_void, size: usize, free_type: u32) -> i32 {
+    const MEM_RELEASE: u32 = 0x8000;
+    if free_type == MEM_RELEASE && victory_gpu::uma_free(address.cast()) {
+        return 1;
+    }
+    // SAFETY: forwarded to the host `VirtualFree`.
+    unsafe { windows_sys::Win32::System::Memory::VirtualFree(address, size, free_type) }
+}
+
 pub(crate) fn module() -> HleModule {
     HleModule {
         name: "kernel",
@@ -381,6 +391,8 @@ pub(crate) fn module() -> HleModule {
             hle_export!(terminate),
             hle_export!(_invalid_parameter_noinfo_noreturn),
             hle_export!(TerminateProcess),
+            #[cfg(windows)]
+            hle_export!(VirtualFree),
             hle_export!(SetUnhandledExceptionFilter),
         ],
     }
