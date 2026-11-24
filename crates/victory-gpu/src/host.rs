@@ -308,7 +308,13 @@ fn create() -> windows::core::Result<Host> {
                 }
             }
             if !uma_windows.is_empty() {
-                tracing::info!(windows = uma_windows.len(), "D3D12 UMA windows mapped");
+                let check_off = std::env::var("VICTORY_UMA_CHECK").is_ok_and(|v| v == "0");
+                if check_off || verify_uma_import(&device, &queue, &fence, event, &uma_windows) {
+                    tracing::info!(windows = uma_windows.len(), "D3D12 UMA windows mapped");
+                } else {
+                    tracing::warn!("UMA GPU readback check failed; falling back to shadow buffers");
+                    uma_windows.clear();
+                }
             }
         }
         let xcl_io = {
@@ -366,6 +372,116 @@ fn create() -> windows::core::Result<Host> {
             uma_windows,
             xcl_io,
         })
+    }
+}
+
+/// Verifies that the GPU actually sees CPU writes inside each `OpenExistingHeapFromAddress`
+/// UMA window (guards against Wine/Proton configurations where import succeeds silently
+/// while the GPU reads zeros).
+unsafe fn verify_uma_import(
+    device: &ID3D12Device,
+    queue: &ID3D12CommandQueue,
+    fence: &ID3D12Fence,
+    event: HANDLE,
+    windows: &[UmaWindow],
+) -> bool {
+    const MAGIC: u64 = 0x5649_554D_415F_4F4B;
+    unsafe {
+        let rb_heap = D3D12_HEAP_PROPERTIES {
+            Type: D3D12_HEAP_TYPE_READBACK,
+            ..Default::default()
+        };
+        let rb_desc = D3D12_RESOURCE_DESC {
+            Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
+            Width: 64,
+            Height: 1,
+            DepthOrArraySize: 1,
+            MipLevels: 1,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+            ..Default::default()
+        };
+        let mut rb: Option<ID3D12Resource> = None;
+        if device
+            .CreateCommittedResource(
+                &rb_heap,
+                D3D12_HEAP_FLAG_NONE,
+                &rb_desc,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                None,
+                &mut rb,
+            )
+            .is_err()
+        {
+            return false;
+        }
+        let Some(rb) = rb else { return false };
+        let Ok(alloc) =
+            device.CreateCommandAllocator::<ID3D12CommandAllocator>(D3D12_COMMAND_LIST_TYPE_DIRECT)
+        else {
+            return false;
+        };
+        let Ok(list) = device.CreateCommandList::<_, _, ID3D12GraphicsCommandList>(
+            0,
+            D3D12_COMMAND_LIST_TYPE_DIRECT,
+            &alloc,
+            None,
+        ) else {
+            return false;
+        };
+        let _ = list.Close();
+
+        for (k, w) in windows.iter().enumerate() {
+            let ptr = w.base as *mut u64;
+            let saved = ptr.read_volatile();
+            ptr.write_volatile(MAGIC);
+
+            if alloc.Reset().is_err() || list.Reset(&alloc, None).is_err() {
+                ptr.write_volatile(saved);
+                return false;
+            }
+            list.CopyBufferRegion(&rb, 0, &w.shadow.buffer, 0, 8);
+            if list.Close().is_err() {
+                ptr.write_volatile(saved);
+                return false;
+            }
+            let cmd: Option<ID3D12CommandList> = list.cast().ok();
+            queue.ExecuteCommandLists(&[cmd]);
+            let val = (k + 1) as u64;
+            if queue.Signal(fence, val).is_err()
+                || fence.SetEventOnCompletion(val, event).is_err()
+            {
+                ptr.write_volatile(saved);
+                return false;
+            }
+            WaitForSingleObject(event, INFINITE);
+            ptr.write_volatile(saved);
+
+            let mut mapped: *mut std::ffi::c_void = std::ptr::null_mut();
+            if rb.Map(0, None, Some(&mut mapped)).is_err() || mapped.is_null() {
+                return false;
+            }
+            let got = mapped.cast::<u64>().read_volatile();
+            rb.Unmap(0, None);
+            if got != MAGIC {
+                tracing::warn!(
+                    window = k,
+                    expected = format_args!("{MAGIC:#x}"),
+                    got = format_args!("{got:#x}"),
+                    "UMA readback mismatch"
+                );
+                return false;
+            }
+        }
+        // Reset fence back to 0? Host starts `submitted` at 0 and increments from 1;
+        // wait: `Host::submit` increments `submitted` starting at 1, so WaitForSingleObject
+        // is satisfied immediately if fence >= 1! Wait: if `submitted` starts at 0, first
+        // `Signal(fence, 1)` would be <= `windows.len()`, so let's reset or signal carefully!
+        let _ = fence.Signal(0);
+        true
     }
 }
 
