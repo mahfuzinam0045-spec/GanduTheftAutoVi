@@ -68,12 +68,13 @@ fn build() -> &'static [u8; 32] {
 }
 
 /// The translation of a console shader container, from the cache when
-/// there is one.
+/// there is one, along with whether it uses XCL's root-signature ABI
+/// (`u0 io`, `u1 res`, `u2..u5 mem`).
 ///
 /// Uses `victory-shader` first (matching VIctory's root signature ABI), and
 /// falls back to XCL's `gpu::recomp` / `gpu::dxil` backend when
 /// `victory-shader` cannot translate a program (or when `VICTORY_XCL_SHADERS=1`).
-pub(crate) fn host_shader(container: &[u8]) -> Result<HostShader, String> {
+pub(crate) fn host_shader_with_abi(container: &[u8]) -> Result<(HostShader, bool), String> {
     let translate = |c: &[u8]| translate_with_xcl_fallback(c);
     match CACHE.get() {
         Some(cache) => cached(cache, build(), container, translate),
@@ -81,22 +82,27 @@ pub(crate) fn host_shader(container: &[u8]) -> Result<HostShader, String> {
     }
 }
 
-fn translate_with_xcl_fallback(container: &[u8]) -> Result<HostShader, String> {
+fn translate_with_xcl_fallback(container: &[u8]) -> Result<(HostShader, bool), String> {
     let prefer_xcl = std::env::var("VICTORY_XCL_SHADERS").is_ok_and(|v| v == "1");
     if !prefer_xcl {
         match victory_shader::emit::translate(container) {
-            Ok(shader) => return Ok(shader),
+            Ok(shader) => return Ok((shader, false)),
             Err(err) => {
                 if let Ok(shader) = translate_via_xcl(container) {
                     tracing::debug!("shader translated via XCL backend fallback (after victory-shader: {err})");
-                    return Ok(shader);
+                    return Ok((shader, true));
                 }
                 return Err(err.to_string());
             }
         }
     }
     translate_via_xcl(container)
-        .or_else(|_| victory_shader::emit::translate(container).map_err(|e| e.to_string()))
+        .map(|s| (s, true))
+        .or_else(|_| {
+            victory_shader::emit::translate(container)
+                .map(|s| (s, false))
+                .map_err(|e| e.to_string())
+        })
 }
 
 #[cfg(feature = "xcl-shaders")]
@@ -143,18 +149,18 @@ struct Translate<F> {
     ran: AtomicBool,
 }
 
-impl<F: Fn(&[u8]) -> Result<HostShader, String> + Send + Sync> Converter for Translate<F> {
+impl<F: Fn(&[u8]) -> Result<(HostShader, bool), String> + Send + Sync> Converter for Translate<F> {
     fn id(&self) -> &'static str {
         "shader.dxil"
     }
     fn version(&self) -> u32 {
         // The build fingerprint in the input does the versioning.
-        1
+        2
     }
     fn convert(&self, input: &[u8]) -> anyhow::Result<Vec<u8>> {
         self.ran.store(true, Ordering::Relaxed);
-        let shader = (self.translate)(&input[32..]).map_err(anyhow::Error::msg)?;
-        Ok(encode(&shader))
+        let (shader, xcl_abi) = (self.translate)(&input[32..]).map_err(anyhow::Error::msg)?;
+        Ok(encode(&shader, xcl_abi))
     }
 }
 
@@ -162,8 +168,8 @@ fn cached(
     cache: &Cache,
     build: &[u8; 32],
     container: &[u8],
-    translate: impl Fn(&[u8]) -> Result<HostShader, String> + Send + Sync,
-) -> Result<HostShader, String> {
+    translate: impl Fn(&[u8]) -> Result<(HostShader, bool), String> + Send + Sync,
+) -> Result<(HostShader, bool), String> {
     let input = [&build[..], container].concat();
     let converter = Translate {
         translate,
@@ -190,7 +196,7 @@ fn cached(
     (converter.translate)(container)
 }
 
-const MAGIC: &[u8; 4] = b"VSH1";
+const MAGIC: &[u8; 4] = b"VSH2";
 const STAGES: [HwStage; 8] = [
     HwStage::Ls,
     HwStage::Hs,
@@ -232,7 +238,7 @@ fn root_type(code: u32) -> RootType {
 }
 
 /// Little-endian words and length-prefixed lists.
-fn encode(s: &HostShader) -> Vec<u8> {
+fn encode(s: &HostShader, xcl_abi: bool) -> Vec<u8> {
     let mut out = MAGIC.to_vec();
     let word = |out: &mut Vec<u8>, v: u32| out.extend(v.to_le_bytes());
     let stage = STAGES.iter().position(|&x| x == s.stage).unwrap_or(0) as u32;
@@ -274,10 +280,11 @@ fn encode(s: &HostShader) -> Vec<u8> {
         word(&mut out, slots.len() as u32);
         out.extend(slots);
     }
+    word(&mut out, u32::from(xcl_abi));
     out
 }
 
-fn decode(bytes: &[u8]) -> Option<HostShader> {
+fn decode(bytes: &[u8]) -> Option<(HostShader, bool)> {
     struct Reader<'a>(&'a [u8]);
     impl<'a> Reader<'a> {
         fn take(&mut self, n: usize) -> Option<&'a [u8]> {
@@ -330,15 +337,19 @@ fn decode(bytes: &[u8]) -> Option<HostShader> {
     }
     let root_cbvs = r.list()?;
     let root_srvs = r.list()?;
-    r.0.is_empty().then_some(HostShader {
-        stage,
-        dxil,
-        user_data,
-        samplers,
-        static_samplers,
-        root_cbvs,
-        root_srvs,
-    })
+    let xcl_abi = r.word()? != 0;
+    r.0.is_empty().then_some((
+        HostShader {
+            stage,
+            dxil,
+            user_data,
+            samplers,
+            static_samplers,
+            root_cbvs,
+            root_srvs,
+        },
+        xcl_abi,
+    ))
 }
 
 #[cfg(test)]
@@ -376,27 +387,27 @@ mod tests {
         let runs = AtomicU64::new(0);
         let translate = |_: &[u8]| {
             runs.fetch_add(1, Ordering::Relaxed);
-            Ok(shader())
+            Ok((shader(), false))
         };
-        assert_eq!(cached(&cache, &build, container, translate), Ok(shader()));
-        assert_eq!(cached(&cache, &build, container, translate), Ok(shader()));
+        assert_eq!(cached(&cache, &build, container, translate), Ok((shader(), false)));
+        assert_eq!(cached(&cache, &build, container, translate), Ok((shader(), false)));
         assert_eq!(runs.load(Ordering::Relaxed), 1, "the second came from disk");
 
         // Another build translates again.
-        assert_eq!(cached(&cache, &[8; 32], container, translate), Ok(shader()));
+        assert_eq!(cached(&cache, &[8; 32], container, translate), Ok((shader(), false)));
         assert_eq!(runs.load(Ordering::Relaxed), 2);
 
         // A damaged entry is a miss, translated and stored again.
         for e in walk(dir.path()) {
-            std::fs::write(e, b"VSH1 broken").unwrap();
+            std::fs::write(e, b"VSH2 broken").unwrap();
         }
-        assert_eq!(cached(&cache, &build, container, translate), Ok(shader()));
+        assert_eq!(cached(&cache, &build, container, translate), Ok((shader(), false)));
         assert_eq!(runs.load(Ordering::Relaxed), 3);
-        assert_eq!(cached(&cache, &build, container, translate), Ok(shader()));
+        assert_eq!(cached(&cache, &build, container, translate), Ok((shader(), false)));
         assert_eq!(runs.load(Ordering::Relaxed), 3);
 
         // Failures are not stored.
-        let fail = |_: &[u8]| Err::<HostShader, _>("unsupported".to_owned());
+        let fail = |_: &[u8]| Err::<(HostShader, bool), _>("unsupported".to_owned());
         assert!(cached(&cache, &build, b"other", fail).is_err());
     }
 
@@ -414,8 +425,8 @@ mod tests {
 
     #[test]
     fn entries_round_trip_and_reject_damage() {
-        let bytes = encode(&shader());
-        assert_eq!(decode(&bytes), Some(shader()));
+        let bytes = encode(&shader(), true);
+        assert_eq!(decode(&bytes), Some((shader(), true)));
         assert_eq!(decode(&bytes[..bytes.len() - 1]), None);
         assert_eq!(decode(&[bytes.as_slice(), &[0]].concat()), None);
         assert_eq!(decode(b"VSH0"), None);

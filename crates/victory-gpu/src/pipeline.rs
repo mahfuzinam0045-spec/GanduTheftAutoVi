@@ -98,6 +98,7 @@ fn shader(stage: &'static str, bytes: &[u8]) -> Arc<Shader> {
 pub(crate) struct Translated {
     pub(crate) host: victory_shader::emit::HostShader,
     pub(crate) used: Vec<victory_shader::UsedResource>,
+    pub(crate) xcl_abi: bool,
 }
 
 #[cfg(windows)]
@@ -132,7 +133,7 @@ impl Shader {
 #[cfg(windows)]
 fn translate(container: &[u8]) -> Result<Translated, String> {
     use victory_shader::{Container, FourCC, HwStage};
-    let host = crate::shader_cache::host_shader(container)?;
+    let (host, xcl_abi) = crate::shader_cache::host_shader_with_abi(container)?;
     let c = Container::parse(container).map_err(|e| e.to_string())?;
     let used = match c.part(FourCC::DXIL) {
         Some(part) => victory_shader::native_programs(part.data)
@@ -148,7 +149,11 @@ fn translate(container: &[u8]) -> Result<Translated, String> {
             .unwrap_or_default(),
         None => Vec::new(),
     };
-    Ok(Translated { host, used })
+    Ok(Translated {
+        host,
+        used,
+        xcl_abi,
+    })
 }
 
 #[repr(C)]

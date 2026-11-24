@@ -266,6 +266,8 @@ pub(crate) struct HostPipeline {
     pub(crate) compute: bool,
     /// A mesh pipeline (graphics without vertex input).
     pub(crate) mesh: bool,
+    /// Uses XCL's root-signature ABI (`u0 io`, `u1 res`, `u2..u5 mem`).
+    pub(crate) xcl_abi: bool,
     pub(crate) pso: ID3D12PipelineState,
     pub(crate) root: ID3D12RootSignature,
     /// Vertex, then pixel stage, or the compute stage.
@@ -328,10 +330,29 @@ impl HostPipeline {
         }
         let host = host()?;
 
+        let xcl_abi = stages
+            .iter()
+            .any(|(s, _)| s.translated().is_some_and(|t| t.xcl_abi));
+
         // The root signature the translated shaders' bindings define.
         let mut params: Vec<D3D12_ROOT_PARAMETER1> = Vec::new();
         let mut samplers = Vec::new();
         let mut bound = Vec::new();
+        if xcl_abi {
+            for i in 0..6u32 {
+                params.push(D3D12_ROOT_PARAMETER1 {
+                    ParameterType: D3D12_ROOT_PARAMETER_TYPE_UAV,
+                    Anonymous: D3D12_ROOT_PARAMETER1_0 {
+                        Descriptor: D3D12_ROOT_DESCRIPTOR1 {
+                            ShaderRegister: i,
+                            RegisterSpace: 0,
+                            Flags: D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE,
+                        },
+                    },
+                    ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+                });
+            }
+        }
         for &(shader, visibility) in &stages {
             let t = &shader.translated()?.host;
             let mut stage = Stage {
@@ -340,48 +361,51 @@ impl HostPipeline {
                 root_cbvs: Vec::new(),
                 root_srvs: Vec::new(),
             };
-            let dwords = t.user_data_dwords();
-            if dwords > 0 {
-                stage.user_data = Some((params.len() as u32, dwords));
-                params.push(D3D12_ROOT_PARAMETER1 {
-                    ParameterType: D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
-                    Anonymous: D3D12_ROOT_PARAMETER1_0 {
-                        Constants: D3D12_ROOT_CONSTANTS {
-                            ShaderRegister: 0,
-                            RegisterSpace: USER_DATA_SPACE,
-                            Num32BitValues: dwords,
-                        },
-                    },
-                    ShaderVisibility: visibility,
-                });
-            }
-            for (slots, kind, out) in [
-                (
-                    &t.root_cbvs,
-                    D3D12_ROOT_PARAMETER_TYPE_CBV,
-                    &mut stage.root_cbvs,
-                ),
-                (
-                    &t.root_srvs,
-                    D3D12_ROOT_PARAMETER_TYPE_SRV,
-                    &mut stage.root_srvs,
-                ),
-            ] {
-                for &slot in slots {
-                    out.push((slot, params.len() as u32));
+            if !xcl_abi {
+                let dwords = t.user_data_dwords();
+                if dwords > 0 {
+                    stage.user_data = Some((params.len() as u32, dwords));
                     params.push(D3D12_ROOT_PARAMETER1 {
-                        ParameterType: kind,
+                        ParameterType: D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
                         Anonymous: D3D12_ROOT_PARAMETER1_0 {
-                            Descriptor: D3D12_ROOT_DESCRIPTOR1 {
-                                ShaderRegister: u32::from(slot),
-                                RegisterSpace: ROOT_CBV_SPACE,
-                                Flags: D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE,
+                            Constants: D3D12_ROOT_CONSTANTS {
+                                ShaderRegister: 0,
+                                RegisterSpace: USER_DATA_SPACE,
+                                Num32BitValues: dwords,
                             },
                         },
                         ShaderVisibility: visibility,
                     });
                 }
+                for (slots, kind, out) in [
+                    (
+                        &t.root_cbvs,
+                        D3D12_ROOT_PARAMETER_TYPE_CBV,
+                        &mut stage.root_cbvs,
+                    ),
+                    (
+                        &t.root_srvs,
+                        D3D12_ROOT_PARAMETER_TYPE_SRV,
+                        &mut stage.root_srvs,
+                    ),
+                ] {
+                    for &slot in slots {
+                        out.push((slot, params.len() as u32));
+                        params.push(D3D12_ROOT_PARAMETER1 {
+                            ParameterType: kind,
+                            Anonymous: D3D12_ROOT_PARAMETER1_0 {
+                                Descriptor: D3D12_ROOT_DESCRIPTOR1 {
+                                    ShaderRegister: u32::from(slot),
+                                    RegisterSpace: ROOT_CBV_SPACE,
+                                    Flags: D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE,
+                                },
+                            },
+                            ShaderVisibility: visibility,
+                        });
+                    }
+                }
             }
+            let sampler_space = if xcl_abi { 1 } else { SAMPLER_SPACE };
             for (n, s) in t.static_samplers.iter().enumerate() {
                 samplers.push(D3D12_STATIC_SAMPLER_DESC {
                     Filter: D3D12_FILTER(s.filter as i32),
@@ -395,8 +419,12 @@ impl HostPipeline {
                     MinLOD: s.min_lod,
                     MaxLOD: s.max_lod,
                     ShaderRegister: n as u32,
-                    RegisterSpace: SAMPLER_SPACE,
-                    ShaderVisibility: visibility,
+                    RegisterSpace: sampler_space,
+                    ShaderVisibility: if xcl_abi {
+                        D3D12_SHADER_VISIBILITY_ALL
+                    } else {
+                        visibility
+                    },
                 });
             }
             bound.push(stage);
@@ -445,6 +473,7 @@ impl HostPipeline {
             return Some(HostPipeline {
                 compute: true,
                 mesh: false,
+                xcl_abi,
                 pso,
                 root,
                 stages: bound,
@@ -477,6 +506,7 @@ impl HostPipeline {
             return Some(HostPipeline {
                 compute: false,
                 mesh: true,
+                xcl_abi,
                 pso,
                 root,
                 stages: bound,
@@ -547,6 +577,7 @@ impl HostPipeline {
         Some(HostPipeline {
             compute: false,
             mesh: false,
+            xcl_abi,
             pso,
             root,
             stages: bound,

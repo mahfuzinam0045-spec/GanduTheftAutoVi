@@ -61,6 +61,7 @@ pub(crate) struct Host {
     next_rtv: AtomicU32,
     presenter: Mutex<Option<Presenter>>,
     uma_windows: Vec<UmaWindow>,
+    xcl_io: Option<(u64, ID3D12Resource)>,
 }
 
 impl Host {
@@ -74,6 +75,16 @@ impl Host {
             .iter()
             .find(|w| address >= w.base && end <= w.base + w.size)
             .map(|w| w.shadow.clone())
+    }
+
+    pub(crate) fn xcl_io_gpu_va(&self) -> Option<u64> {
+        self.xcl_io.as_ref().map(|(va, _)| *va)
+    }
+
+    pub(crate) fn xcl_mem_gpu_va(&self, window: usize) -> Option<u64> {
+        self.uma_windows
+            .get(window)
+            .map(|w| w.shadow.gpu(w.base))
     }
 }
 
@@ -300,6 +311,43 @@ fn create() -> windows::core::Result<Host> {
                 tracing::info!(windows = uma_windows.len(), "D3D12 UMA windows mapped");
             }
         }
+        let xcl_io = {
+            let io_heap = D3D12_HEAP_PROPERTIES {
+                Type: D3D12_HEAP_TYPE_DEFAULT,
+                ..Default::default()
+            };
+            let io_desc = D3D12_RESOURCE_DESC {
+                Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
+                Width: 64 << 10,
+                Height: 1,
+                DepthOrArraySize: 1,
+                MipLevels: 1,
+                SampleDesc: DXGI_SAMPLE_DESC {
+                    Count: 1,
+                    Quality: 0,
+                },
+                Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+                Flags: D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                ..Default::default()
+            };
+            let mut buf: Option<ID3D12Resource> = None;
+            device
+                .CreateCommittedResource(
+                    &io_heap,
+                    D3D12_HEAP_FLAG_NONE,
+                    &io_desc,
+                    D3D12_RESOURCE_STATE_COMMON,
+                    None,
+                    &mut buf,
+                )
+                .ok()
+                .and(buf)
+                .map(|b| {
+                    let va = b.GetGPUVirtualAddress();
+                    name(&b, || "XCL ABI io/res buffer".to_string());
+                    (va, b)
+                })
+        };
         tracing::info!("host D3D12 device ready");
         Ok(Host {
             device,
@@ -316,6 +364,7 @@ fn create() -> windows::core::Result<Host> {
             next_rtv: AtomicU32::new(0),
             presenter: Mutex::new(None),
             uma_windows,
+            xcl_io,
         })
     }
 }

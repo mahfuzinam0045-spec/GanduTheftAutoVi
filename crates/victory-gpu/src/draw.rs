@@ -456,6 +456,35 @@ impl State {
             list.keep(&p.pso);
             list.keep(&p.root);
         }
+        if p.xcl_abi {
+            if let Some(host) = crate::host::host() {
+                if let Some(io) = host.xcl_io_gpu_va() {
+                    // SAFETY: an open list; `io` is a live 64 KiB UAV buffer.
+                    unsafe {
+                        if compute {
+                            l.SetComputeRootUnorderedAccessView(0, io);
+                            l.SetComputeRootUnorderedAccessView(1, io);
+                        } else {
+                            l.SetGraphicsRootUnorderedAccessView(0, io);
+                            l.SetGraphicsRootUnorderedAccessView(1, io);
+                        }
+                    }
+                }
+                for w in 0..4usize {
+                    if let Some(mem) = host.xcl_mem_gpu_va(w) {
+                        // SAFETY: an open list; `mem` is a live UMA window buffer.
+                        unsafe {
+                            if compute {
+                                l.SetComputeRootUnorderedAccessView((2 + w) as u32, mem);
+                            } else {
+                                l.SetGraphicsRootUnorderedAccessView((2 + w) as u32, mem);
+                            }
+                        }
+                    }
+                }
+            }
+            return true;
+        }
         for stage in &p.stages {
             let t = stage.translated();
             self.table_failed = false;
