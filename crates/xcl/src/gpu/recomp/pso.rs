@@ -200,7 +200,7 @@ mod translated {
 
     impl Backend {
         pub(super) fn current() -> Self {
-            match (crate::gpu::dxil::kernel::enabled(), crate::gpu::dxil::kernel::enabled_graphics()) {
+            match (crate::gpu::dxil::kernel::live_enabled(), crate::gpu::dxil::kernel::live_graphics_enabled()) {
                 (_, true) => Backend::DirectAll,
                 (true, false) => Backend::DirectCompute,
                 _ => Backend::Hlsl,
@@ -342,9 +342,9 @@ mod translated {
 // Changes here, in `fspx`, or in `console_translation` that alter the cached result must bump
 // `TRANSLATION_GLUE_REVISION` in build.rs; cache serialization changes need not bump it.
 fn compile_console_shader(blob: &[u8], stage: Stage, sampler_base: u32, windows: u32, split_wave64: bool) -> Result<Compiled, String> {
-    // `XCL_DIRECT_DXIL=1`: compute shaders through the direct DXIL translator, the HLSL path
-    // for what it cannot translate yet
-    if stage == Stage::Compute && crate::gpu::dxil::kernel::enabled() {
+    // Phase 7: compute shaders route through the direct DXIL translator by default
+    // (`XCL_DIRECT_DXIL=0` opts out), with the HLSL path as fallback.
+    if stage == Stage::Compute && crate::gpu::dxil::kernel::live_enabled() {
         match direct_compute(blob, sampler_base, windows, split_wave64) {
             Ok(c) => {
                 crate::gpu::dxil::coverage::record_translated("CS");
@@ -356,7 +356,7 @@ fn compile_console_shader(blob: &[u8], stage: Stage, sampler_base: u32, windows:
     // `XCL_DIRECT_DXIL=all`: vertex / pixel shaders too (not with the PS debug hooks below)
     let ps_debug = stage == Stage::Pixel
         && (debug_color(blob).is_some() || ["XCL_DEBUG_LOD0", "XCL_DEBUG_PS_SUB", "XCL_DEBUG_PS_EXPR"].iter().any(|v| std::env::var_os(v).is_some()));
-    if stage != Stage::Compute && !ps_debug && crate::gpu::dxil::kernel::enabled_graphics() {
+    if stage != Stage::Compute && !ps_debug && crate::gpu::dxil::kernel::live_graphics_enabled() {
         match direct_graphics(blob, stage, sampler_base, windows) {
             Ok(c) => {
                 crate::gpu::dxil::coverage::record_translated(if stage == Stage::Vertex { "VS" } else { "PS" });
@@ -720,8 +720,9 @@ pub fn console_mesh(blob: &[u8], ps: Option<&[u8]>, split_wave64: bool) -> Resul
     let p = f.programs.first().ok_or("FSSM without a program")?;
     let code = &f.data[p.offset..p.offset + p.len];
     let wave64 = super::detect_wave64(code);
-    // `XCL_DIRECT_DXIL=1`: the compute pass through the direct DXIL translator (HLSL fallback)
-    if crate::gpu::dxil::kernel::enabled() {
+    // Phase 7: the compute pass routes through the direct DXIL translator by default
+    // (`XCL_DIRECT_DXIL=0` opts out), with HLSL fallback.
+    if crate::gpu::dxil::kernel::live_enabled() {
         let o = crate::gpu::dxil::kernel::KernelOptions { wave64, split: wave64 && split_wave64, mem_windows: mem_windows(), sampler_base: 0 };
         match crate::gpu::dxil::kernel::translate_mesh(code, o, ms) {
             Ok(k) => {

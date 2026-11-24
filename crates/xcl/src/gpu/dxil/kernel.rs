@@ -35,7 +35,7 @@ pub struct KernelOptions {
 /// Version of the direct translator's output, part of the on-disk translation cache's
 /// identity (`recomp::pso`): bump it on any change that alters the emitted containers
 /// (the `gpu/dxil` sources are not in build.rs's translator source hash).
-pub const TRANSLATOR_VERSION: u32 = 4;
+pub const TRANSLATOR_VERSION: u32 = 5;
 
 /// `XCL_DIRECT_DXIL=1`: console compute shaders (and the kernel tests) go through this
 /// translator, with the HLSL path as the fallback for what it cannot translate yet.
@@ -48,6 +48,26 @@ pub fn enabled() -> bool {
 /// so a direct stage links with an HLSL one).
 pub fn enabled_graphics() -> bool {
     std::env::var("XCL_DIRECT_DXIL").is_ok_and(|v| v == "all")
+}
+
+/// Phase 7 live routing for compute + mesh compute pass: default-on for covered shaders
+/// (with automatic HLSL fallback on any unsupported construct). Set `XCL_DIRECT_DXIL=0`
+/// (or `off` / `false`) to force the HLSL path.
+pub fn live_enabled() -> bool {
+    live_enabled_from(std::env::var("XCL_DIRECT_DXIL").ok().as_deref())
+}
+
+/// Phase 7 live routing for VS/PS graphics stages (`XCL_DIRECT_DXIL=all`).
+pub fn live_graphics_enabled() -> bool {
+    live_graphics_enabled_from(std::env::var("XCL_DIRECT_DXIL").ok().as_deref())
+}
+
+fn live_enabled_from(val: Option<&str>) -> bool {
+    !matches!(val, Some("0" | "off" | "false" | "OFF" | "FALSE"))
+}
+
+fn live_graphics_enabled_from(val: Option<&str>) -> bool {
+    matches!(val, Some("all" | "ALL"))
 }
 
 /// Translates `code` into a signed DXIL compute container, or names the first
@@ -517,4 +537,24 @@ fn entry_exec(lw: &mut Lw, total: u32, tid: Value) -> (Value, Value) {
         (w[0], if lw.wave64 { w[1] } else { zero })
     };
     (lo, hi)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_routing_defaults_on_and_respects_opt_out() {
+        assert!(live_enabled_from(None));
+        assert!(live_enabled_from(Some("1")));
+        assert!(live_enabled_from(Some("all")));
+        assert!(!live_enabled_from(Some("0")));
+        assert!(!live_enabled_from(Some("off")));
+        assert!(!live_enabled_from(Some("false")));
+
+        assert!(!live_graphics_enabled_from(None));
+        assert!(!live_graphics_enabled_from(Some("1")));
+        assert!(live_graphics_enabled_from(Some("all")));
+        assert!(live_graphics_enabled_from(Some("ALL")));
+    }
 }

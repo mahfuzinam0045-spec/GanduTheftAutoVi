@@ -107,12 +107,12 @@ in scratch memory. The direct backend therefore uses a per-lane model:
 | 4 (partial) | Real compute shaders: resource tracing → heap/root bindings; `XCL_DIRECT_DXIL=1` live routing with fallback | Corpus CS coverage measured, live title runs |
 | 5 (partial) | Graphics: VS/PS signatures (`ISG1`/`OSG1`/PSV elements), interpolation, exports, images/samplers | VS/PS tests and live draws |
 | 6 (partial) | Mesh/two-pass pipelines, mesh output metadata | Mesh tests |
-| 7 | Default-on for covered shaders, cache keying on backend version | Parity with the HLSL path |
+| 7 ✅ (compute) | Default-on for covered compute + mesh compute shaders (`XCL_DIRECT_DXIL=0` opt-out, `=all` for VS/PS), cache keying on backend version (`TRANSLATOR_VERSION = 5`) | Parity with the HLSL path |
 
-Status (main-based port, 2026-11-24): phases 1–3 done; 4–6 partial — live routing
-behind `XCL_DIRECT_DXIL=1` (compute + mesh compute pass) / `=all` (VS/PS) with a
-logged HLSL fallback is in, corpus coverage and live-title runs are not measured
-yet. Model: a faithful EXEC/ballot model (EXEC and VCC as wave masks, lanes
-predicated per instruction over a structured block CFG); per-lane
+Status (2026-11-25): phases 1–3 done; 4–6 in place with automatic HLSL fallback;
+phase 7 default-on for live compute + mesh compute pass (`XCL_DIRECT_DXIL=0` to
+opt out, `XCL_DIRECT_DXIL=all` for VS/PS), with `TRANSLATOR_VERSION = 5` cache
+keying in `recomp::pso`. Model: a faithful EXEC/ballot model (EXEC and VCC as wave
+masks, lanes predicated per instruction over a structured block CFG); per-lane
 structurization (real divergent control flow instead of predication) is future
 work. Coverage: `xcl shaders <pack> --direct`.
