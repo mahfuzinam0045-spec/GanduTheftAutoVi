@@ -161,6 +161,21 @@ const SEARCH_US: u64 = 1_000_000;
 
 /// The PC's controller (the XInput slot that answers first: an Xbox pad, or any pad Windows
 /// exposes through XInput) as a GameInput gamepad state; None without one.
+const LEFT_THUMB_DEADZONE: i16 = 7849;
+const RIGHT_THUMB_DEADZONE: i16 = 8689;
+
+fn normalize_thumb(raw: i16, deadzone: i16) -> f32 {
+    let v = raw as i32;
+    let dz = deadzone as i32;
+    let mag = v.abs();
+    if mag <= dz {
+        return 0.0;
+    }
+    let sign = if v < 0 { -1.0 } else { 1.0 };
+    let norm = (mag - dz) as f32 / (32767 - dz) as f32;
+    (sign * norm).clamp(-1.0, 1.0)
+}
+
 fn xinput_pad() -> Option<GamepadState> {
     let (get, _) = xinput()?;
     let connected = PAD_CONNECTED.load(Ordering::Relaxed);
@@ -190,15 +205,14 @@ fn xinput_pad() -> Option<GamepadState> {
             }
             PAD.store(k, Ordering::Relaxed);
             PAD_CONNECTED.store(true, Ordering::Relaxed);
-            let axis = |v: i16| (v as f32 / 32767.0).max(-1.0);
             return Some(GamepadState {
                 buttons: buttons_from_xinput(x.buttons),
                 left_trigger: x.left_trigger as f32 / 255.0,
                 right_trigger: x.right_trigger as f32 / 255.0,
-                left_x: axis(x.lx),
-                left_y: axis(x.ly),
-                right_x: axis(x.rx),
-                right_y: axis(x.ry),
+                left_x: normalize_thumb(x.lx, LEFT_THUMB_DEADZONE),
+                left_y: normalize_thumb(x.ly, LEFT_THUMB_DEADZONE),
+                right_x: normalize_thumb(x.rx, RIGHT_THUMB_DEADZONE),
+                right_y: normalize_thumb(x.ry, RIGHT_THUMB_DEADZONE),
             });
         }
     }
@@ -1358,5 +1372,16 @@ mod tests {
         assert!(unsafe { unregister_callback(g, token, 5_000_000) });
         assert!(gate.finished.load(Ordering::Acquire));
         releaser.join().unwrap();
+    }
+
+    #[test]
+    fn thumb_deadzone_clamps_drift_and_rescales_range() {
+        assert_eq!(normalize_thumb(0, LEFT_THUMB_DEADZONE), 0.0);
+        assert_eq!(normalize_thumb(5000, LEFT_THUMB_DEADZONE), 0.0);
+        assert_eq!(normalize_thumb(-7849, LEFT_THUMB_DEADZONE), 0.0);
+        assert_eq!(normalize_thumb(32767, LEFT_THUMB_DEADZONE), 1.0);
+        assert_eq!(normalize_thumb(-32768, LEFT_THUMB_DEADZONE), -1.0);
+        let mid = normalize_thumb(20308, LEFT_THUMB_DEADZONE);
+        assert!(mid > 0.45 && mid < 0.55, "mid={mid}");
     }
 }

@@ -492,7 +492,37 @@ unsafe extern "system" fn factory_create_queue1(p: *mut c_void, desc: *const u8,
     factory_create_queue(p, desc, riid, out)
 }
 
-unsafe extern "system" fn factory_set_cpu_affinity(_p: *mut c_void, _mask: u64) -> HRESULT {
+static WORKER_CPU_AFFINITY: AtomicU64 = AtomicU64::new(0);
+
+fn win32_thread_priority(queue_priority: i8) -> i32 {
+    match queue_priority {
+        i if i < 0 => -1, // THREAD_PRIORITY_BELOW_NORMAL
+        0 => 0,           // THREAD_PRIORITY_NORMAL
+        1 => 1,           // THREAD_PRIORITY_ABOVE_NORMAL
+        _ => 2,           // THREAD_PRIORITY_HIGHEST
+    }
+}
+
+unsafe fn configure_worker_thread(queue_priority: i8) {
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcess, GetCurrentThread, GetProcessAffinityMask, SetThreadAffinityMask, SetThreadPriority,
+    };
+    let h = GetCurrentThread();
+    let _ = SetThreadPriority(h, win32_thread_priority(queue_priority));
+    let requested = WORKER_CPU_AFFINITY.load(Ordering::Relaxed);
+    if requested != 0 {
+        let (mut proc_mask, mut sys_mask) = (0usize, 0usize);
+        if GetProcessAffinityMask(GetCurrentProcess(), &mut proc_mask, &mut sys_mask) != 0 {
+            let masked = (requested as usize) & proc_mask;
+            if masked != 0 {
+                let _ = SetThreadAffinityMask(h, masked);
+            }
+        }
+    }
+}
+
+unsafe extern "system" fn factory_set_cpu_affinity(_p: *mut c_void, mask: u64) -> HRESULT {
+    WORKER_CPU_AFFINITY.store(mask, Ordering::Relaxed);
     S_OK
 }
 
@@ -1087,6 +1117,8 @@ impl QueueInner {
             }
         }
         let _active = ActiveGuard(self);
+        // SAFETY: configures priority and optional CPU affinity on the dedicated worker thread.
+        unsafe { configure_worker_thread(self.desc[10] as i8) };
         // the first failure of the requests since the last status entry
         let mut since_status = S_OK;
         for batch in rx {
@@ -2636,5 +2668,13 @@ mod tests {
             queue_release(q);
             status_release(s);
         }
+    }
+
+    #[test]
+    fn worker_thread_priority_maps_dstorage_levels() {
+        assert_eq!(win32_thread_priority(-1), -1);
+        assert_eq!(win32_thread_priority(0), 0);
+        assert_eq!(win32_thread_priority(1), 1);
+        assert_eq!(win32_thread_priority(2), 2);
     }
 }

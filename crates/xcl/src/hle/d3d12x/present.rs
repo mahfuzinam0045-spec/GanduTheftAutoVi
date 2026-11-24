@@ -526,7 +526,9 @@ struct Presenter {
     w: u32,
     h: u32,
     fmt: DXGI_FORMAT,
-    alloc: ID3D12CommandAllocator,
+    allocs: [ID3D12CommandAllocator; 2],
+    alloc_fences: [u64; 2],
+    slot: usize,
     list: ID3D12GraphicsCommandList,
     fence: ID3D12Fence,
     copy_source: Option<ID3D12Resource>,
@@ -567,16 +569,27 @@ unsafe fn transition(res: &ID3D12Resource, before: D3D12_RESOURCE_STATES, after:
 unsafe fn new_presenter(queue: usize) -> Option<Presenter> {
     let dev_raw = super::real::device_raw();
     let dev = ID3D12Device::from_raw_borrowed(&dev_raw)?;
-    let alloc: ID3D12CommandAllocator = dev.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT).ok()?;
-    let list: ID3D12GraphicsCommandList = dev.CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, &alloc, None).ok()?;
+    let alloc0: ID3D12CommandAllocator = dev.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT).ok()?;
+    let alloc1: ID3D12CommandAllocator = dev.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT).ok()?;
+    let list: ID3D12GraphicsCommandList = dev.CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, &alloc0, None).ok()?;
     list.Close().ok()?;
     let fence: ID3D12Fence = dev.CreateFence(0, D3D12_FENCE_FLAG_NONE).ok()?;
     let event = CreateEventW(None, false, false, None).ok()?;
     Some(Presenter {
-        queue, dev: dev.clone(), sc: None, w: 0, h: 0, fmt: DXGI_FORMAT_UNKNOWN, alloc, list, fence,
+        queue, dev: dev.clone(), sc: None, w: 0, h: 0, fmt: DXGI_FORMAT_UNKNOWN,
+        allocs: [alloc0, alloc1], alloc_fences: [0, 0], slot: 0, list, fence,
         copy_source: None, dumps: Vec::new(), disabled: false, value: 0, event,
         last: Instant::now() - Duration::from_secs(1),
     })
+}
+
+fn sync_interval_from(val: Option<&str>) -> u32 {
+    if matches!(val, Some("1" | "true" | "on")) { 1 } else { 0 }
+}
+
+fn present_sync_interval() -> u32 {
+    static INTERVAL: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *INTERVAL.get_or_init(|| sync_interval_from(std::env::var("XCL_VSYNC").ok().as_deref()))
 }
 
 unsafe fn ensure_swapchain(p: &mut Presenter, hwnd: HWND, w: u32, h: u32, fmt: DXGI_FORMAT) -> bool {
@@ -674,8 +687,9 @@ unsafe fn present_now(min_interval: Duration, frame: Option<(usize, usize)>) {
     if p.queue != queue {
         return; // swap chain is bound to the first queue we presented from
     }
-    // wait for the previous copy so the allocator can be reused
-    if let Err(e) = fence::wait(&p.fence, p.value, &p.dev, Some(p.event), 100) {
+    // Wait only for the allocator slot we are about to reuse (N-2), enabling CPU/GPU pipelining.
+    let slot = p.slot;
+    if let Err(e) = fence::wait(&p.fence, p.alloc_fences[slot], &p.dev, Some(p.event), 100) {
         p.disabled = matches!(&e, FenceError::Removed(_));
         if !matches!(&e, FenceError::Timeout(_)) {
             crate::xlog_error!("present: previous copy: {e}");
@@ -689,7 +703,7 @@ unsafe fn present_now(min_interval: Duration, frame: Option<(usize, usize)>) {
     }
     let Some(sc) = p.sc.clone() else { return };
     let Ok(bb) = sc.GetBuffer::<ID3D12Resource>(sc.GetCurrentBackBufferIndex()) else { return };
-    if p.alloc.Reset().is_err() || p.list.Reset(&p.alloc, None).is_err() {
+    if p.allocs[slot].Reset().is_err() || p.list.Reset(&p.allocs[slot], None).is_err() {
         return;
     }
     let b1 = [transition(&bb, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST)];
@@ -737,6 +751,8 @@ unsafe fn present_now(min_interval: Duration, frame: Option<(usize, usize)>) {
     p.copy_source = Some(src);
     p.dumps = dumps;
     p.value += 1;
+    p.alloc_fences[slot] = p.value;
+    p.slot = (slot + 1) % 2;
     if let Err(e) = q.Signal(&p.fence, p.value) {
         // The copy is already submitted. Without its signal, keep its resources and allocator.
         p.disabled = true;
@@ -744,7 +760,7 @@ unsafe fn present_now(min_interval: Duration, frame: Option<(usize, usize)>) {
         crate::xlog_error!("present: submit copy: {e}");
         return;
     }
-    if let Err(e) = sc.Present(0, DXGI_PRESENT(0)).ok() {
+    if let Err(e) = sc.Present(present_sync_interval(), DXGI_PRESENT(0)).ok() {
         let e = fence::api_error(&p.dev, "Present", e);
         p.disabled = matches!(&e, FenceError::Removed(_));
         crate::xlog_error!("present: {e}");
@@ -1152,5 +1168,14 @@ mod frame_dump_tests {
             let json = serde_json::to_value(last_frame_dump().unwrap()).unwrap();
             assert!(json["non_dark_samples"].is_null(), "undecoded is different from dark");
         }
+    }
+
+    #[test]
+    fn sync_interval_respects_vsync_env_values() {
+        assert_eq!(sync_interval_from(None), 0);
+        assert_eq!(sync_interval_from(Some("0")), 0);
+        assert_eq!(sync_interval_from(Some("1")), 1);
+        assert_eq!(sync_interval_from(Some("true")), 1);
+        assert_eq!(sync_interval_from(Some("on")), 1);
     }
 }
