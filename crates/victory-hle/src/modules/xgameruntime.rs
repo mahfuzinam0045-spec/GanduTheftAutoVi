@@ -53,6 +53,19 @@ impl Guid {
             data4,
         }
     }
+
+    pub const fn to_u128(self) -> u128 {
+        ((self.data1 as u128) << 96)
+            | ((self.data2 as u128) << 80)
+            | ((self.data3 as u128) << 64)
+            | (u64::from_be_bytes(self.data4) as u128)
+    }
+}
+
+/// Resolve a GDK `(provider, interface, slot)` triple to its function name using the shared
+/// `gdk-table` crate.
+pub fn lookup_gdk_name(provider: Guid, interface: Guid, slot: usize) -> Option<&'static str> {
+    gdk_table::lookup(provider.to_u128(), interface.to_u128(), slot)
 }
 
 impl std::fmt::Display for Guid {
@@ -340,5 +353,16 @@ mod tests {
             assert!(!kernel32.is_null(), "host DLLs still load from the host");
             assert!(!GetProcAddress(kernel32, c"GetTickCount".as_ptr().cast()).is_null());
         }
+    }
+
+    #[test]
+    fn shared_gdk_table_resolves_xuser_get_id() {
+        let xuser = Guid::new(
+            0x01acd177,
+            0x91f9,
+            0x4763,
+            [0xa3, 0x8e, 0xcc, 0xbb, 0x55, 0xce, 0x32, 0xe0],
+        );
+        assert_eq!(lookup_gdk_name(xuser, xuser, 11), Some("XUserGetId"));
     }
 }

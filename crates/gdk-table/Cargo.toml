@@ -1,0 +1,9 @@
+[package]
+name = "gdk-table"
+description = "Shared GDK XGameRuntime thunk table (function, class GUID, interface GUID, vtable slot)."
+version.workspace = true
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]

@@ -29,8 +29,9 @@ victory-shader = { path = "crates/victory-shader" }
 victory-formats = { path = "crates/victory-formats" }
 victory-pipeline = { path = "crates/victory-pipeline" }
 victory-game = { path = "crates/victory-game" }
-# Internal crates — XCL
+# Internal crates — XCL & shared
 xcl = { path = "crates/xcl" }
+gdk-table = { path = "crates/gdk-table" }
 
 # External crates
 anyhow = "1.0.104"

@@ -14,7 +14,9 @@ name = "xcl"
 path = "src/main.rs"
 
 [dependencies]
+gdk-table.workspace = true
 miniz_oxide.workspace = true
+opus-pure.workspace = true
 retour.workspace = true
 serde.workspace = true
 serde_json.workspace = true

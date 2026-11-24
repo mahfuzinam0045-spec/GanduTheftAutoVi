@@ -29,9 +29,11 @@ Tracked issues for the merged **VIctory + XCL** workspace (`shadshuvo/GanduTheft
   - `victory-loader` lacks XCL's `insn.rs` / `eh.rs` emulation for console Zen 2 instructions (`clzero`, `rdpru`, `mwaitx`, `clwb`) on pre-Ice Lake Intel CPUs (`0xC000001D`).
 - **Action:** Port `lazy.rs` and `insn.rs` emulation into `victory-hle` and `victory-loader`.
 
-## 6. Consolidate `XGameRuntime` GDK Thunk Table & Audio Decoders
-- **Problem:** `crates/xcl/src/hle/xgameruntime/` (396-function GDK table, `XGameSave`) and `crates/victory-hle/src/modules/xgameruntime.rs` duplicate runtime services, as do the `xma2` / `opus` decoders.
-- **Action:** Unify onto a single shared GDK runtime and audio decoder implementation.
+## 6. Consolidate `XGameRuntime` GDK Thunk Table & Audio Decoders (Partially Resolved)
+- **Done:**
+  - Extracted the 396-function GDK thunk table into a shared `MIT OR Apache-2.0` crate (`crates/gdk-table`), used by both `crates/xcl` and `crates/victory-hle` (`xgameruntime::lookup_gdk_name`).
+  - Wired `opus-pure` (BSD-3-Clause) as a pure-Rust fallback in `crates/xcl/src/hle/opus.rs` (`PureDecoder`) when `MSOpusDecoder.dll` / `opus.dll` are absent.
+- **Remaining:** Unify `XGameSave` / runtime area handlers and `XMA2` decoders (`victory-formats/src/xma.rs` vs `xcl/src/hle/xma2/`).
 
 ## 7. Remaining GPU / UMA / VRAM Gaps in `victory-gpu`
 - **Problem:** While `uma.rs` and `vram.rs` are now wired into `victory-gpu` (`host.rs`, `shadow.rs`, `resource.rs`) and `XMemAllocDefault(ALLOC_32BIT)`:

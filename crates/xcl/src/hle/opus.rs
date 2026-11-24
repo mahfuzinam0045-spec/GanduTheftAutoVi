@@ -826,18 +826,19 @@ fn mf_runtime() -> Result<&'static MfRuntime, String> {
     .map_err(|e| e.clone())
 }
 
-/// Whether an Opus decoder is available: Windows' built-in `MSOpusDecoder.dll` + Media Foundation
-/// runtime, or libopus loaded from `opus.dll` (see [`libopus`]).
+/// Whether an Opus decoder is available: Windows' built-in `MSOpusDecoder.dll`, `opus.dll`,
+/// or the built-in pure-Rust `opus-pure` fallback.
 pub fn is_available() -> bool {
-    mf_runtime().is_ok() || libopus().is_ok()
+    let _ = (mf_runtime().is_ok(), libopus().is_ok());
+    true
 }
 
-/// The decoder in use ("Windows MSOpusDecoder", "libopus (path)"), or why there is none. Logged once.
+/// The decoder in use ("Windows MSOpusDecoder", "libopus (path)", or "opus-pure"). Logged once.
 pub fn backend() -> String {
     match (mf_runtime(), libopus()) {
         (Ok(_), _) => "Windows' MSOpusDecoder (Media Foundation)".to_string(),
         (_, Ok(l)) => format!("libopus ({})", l.path),
-        (Err(a), Err(b)) => format!("none ({a}; {b})"),
+        (Err(_), Err(_)) => "opus-pure (pure Rust fallback)".to_string(),
     }
 }
 
@@ -973,10 +974,47 @@ impl Drop for LibDecoder {
 // SAFETY: a libopus decoder state is used by one thread at a time (`&mut self`).
 unsafe impl Send for LibDecoder {}
 
-/// One single-stream decoder: Windows' MFT where there is one, else libopus.
+/// Pure-Rust fallback decoder using `opus-pure` (BSD-3-Clause) when neither
+/// `MSOpusDecoder.dll` nor `opus.dll` is present.
+struct PureDecoder {
+    inner: opus_pure::OpusDecoder,
+    channels: u16,
+    output_rate: u32,
+    timestamp_100ns: i64,
+}
+
+impl PureDecoder {
+    fn new(channels: u16, sample_rate: u32) -> Result<Self, String> {
+        let ch = channels.clamp(1, 2);
+        let rate = if matches!(sample_rate, 8_000 | 12_000 | 16_000 | 24_000 | 48_000) { sample_rate } else { 48_000 };
+        let inner = opus_pure::OpusDecoder::new(rate as _, ch as usize)
+            .map_err(|e| format!("opus-pure init: {e:?}"))?;
+        Ok(Self { inner, channels: ch, output_rate: rate, timestamp_100ns: 0 })
+    }
+
+    fn flush(&mut self) {
+        let _ = self.inner.reset_state();
+        self.timestamp_100ns = 0;
+    }
+
+    fn decode_packet(&mut self, packet: &[u8], out: &mut Vec<i16>) -> Result<usize, String> {
+        parse_packet(packet, false).ok_or_else(|| "invalid RFC 6716 Opus packet".to_string())?;
+        let max_frames = (MAX_PACKET_SAMPLES_48K as usize * self.output_rate as usize) / 48_000;
+        let ch = self.channels as usize;
+        let mut pcm = vec![0f32; max_frames * ch];
+        let n = self.inner.decode(packet, max_frames, &mut pcm)
+            .map_err(|e| format!("opus-pure decode: {e:?}"))?;
+        out.extend(pcm[..n * ch].iter().map(|&s| (s.clamp(-1.0, 1.0) * 32767.0).round() as i16));
+        self.timestamp_100ns = self.timestamp_100ns.saturating_add(n as i64 * 10_000_000 / self.output_rate as i64);
+        Ok(n)
+    }
+}
+
+/// One single-stream decoder: Windows' MFT where there is one, else libopus, else `opus-pure`.
 enum SingleStreamDecoder {
     Mft(MftDecoder),
     Lib(LibDecoder),
+    Pure(PureDecoder),
 }
 
 impl SingleStreamDecoder {
@@ -985,11 +1023,17 @@ impl SingleStreamDecoder {
         static CHOICE: std::sync::Once = std::sync::Once::new();
         let d = match MftDecoder::new(channels, sample_rate, head_bytes) {
             Ok(d) => Ok(Self::Mft(d)),
-            Err(mft) => LibDecoder::new(channels, sample_rate).map(Self::Lib).map_err(|lib| format!("{mft}; {lib}")),
+            Err(mft) => match LibDecoder::new(channels, sample_rate) {
+                Ok(l) => Ok(Self::Lib(l)),
+                Err(lib) => PureDecoder::new(channels, sample_rate)
+                    .map(Self::Pure)
+                    .map_err(|pure| format!("{mft}; {lib}; {pure}")),
+            },
         };
         CHOICE.call_once(|| match &d {
             Ok(Self::Mft(_)) => crate::xlog_info!("Opus: decoder = Windows' MSOpusDecoder (Media Foundation)"),
             Ok(Self::Lib(l)) => crate::xlog_info!("Opus: decoder = libopus ({})", l.lib.path),
+            Ok(Self::Pure(_)) => crate::xlog_info!("Opus: decoder = opus-pure (pure Rust fallback)"),
             Err(e) => crate::xlog_info!("Opus: decoder = none ({e})"),
         });
         d
@@ -999,6 +1043,7 @@ impl SingleStreamDecoder {
         match self {
             Self::Mft(d) => d.output_rate,
             Self::Lib(d) => d.output_rate,
+            Self::Pure(d) => d.output_rate,
         }
     }
 
@@ -1007,6 +1052,7 @@ impl SingleStreamDecoder {
         match self {
             Self::Mft(d) => d.timestamp_100ns,
             Self::Lib(d) => d.timestamp_100ns,
+            Self::Pure(d) => d.timestamp_100ns,
         }
     }
 
@@ -1014,6 +1060,7 @@ impl SingleStreamDecoder {
         match self {
             Self::Mft(d) => d.flush(),
             Self::Lib(d) => d.flush(),
+            Self::Pure(d) => d.flush(),
         }
     }
 
@@ -1021,6 +1068,7 @@ impl SingleStreamDecoder {
         match self {
             Self::Mft(d) => d.decode_packet(packet, out),
             Self::Lib(d) => d.decode_packet(packet, out),
+            Self::Pure(d) => d.decode_packet(packet, out),
         }
     }
 }
