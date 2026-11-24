@@ -11,25 +11,12 @@ Tracked issues for the merged **VIctory + XCL** workspace (`shadshuvo/GanduTheft
 - **Action:** Complete Phases 4–7 and measure corpus coverage via `xcl shaders <pack> --direct`.
 
 ### #6 — Consolidate `XGameRuntime` GDK Thunk Table & Audio Decoders
-- **Problem:** `crates/xcl/src/hle/xgameruntime/` (396-function GDK table, `XGameSave`) and `crates/victory-hle/src/modules/xgameruntime.rs` duplicate runtime services, as do the `xma2` / `opus` decoders.
-- **Action:** Unify onto a single shared GDK runtime and audio decoder implementation.
+- **Problem:** `crates/xcl/src/hle/xgameruntime/` and `crates/victory-hle/src/modules/xgameruntime.rs` duplicate runtime services, as do the `xma2` / `opus` decoders. (`gdk-table` was extracted in `32140c5`, but full consolidation is still in progress.)
+- **Action:** Finish unifying onto a single shared GDK runtime and audio decoder implementation.
 
-### #9 — Critical: Root Signature ABI Mismatch for XCL-Fallback Shaders in `victory-gpu`
-- **Problem:** `translate_via_xcl()` in `crates/victory-gpu/src/shader_cache.rs` outputs DXIL compiled for **XCL's ABI** (`u0 io`, `u1 res`, `u2 mem` + directly indexed heaps), whereas `HostPipeline::new()` in `crates/victory-gpu/src/pipeline/host.rs` builds a root signature for **VIctory's ABI** (`b0` root constants + `ROOT_CBV_SPACE` descriptors).
-- **Impact:** PSO creation or draw-time binding for any shader that falls back to XCL will fail or read uninitialized `io`/`mem` UAVs.
-- **Action:** Track whether a `HostShader` uses XCL's ABI and have `HostPipeline::new()` / `draw.rs` bind `xcl::gpu::recomp::pso::abi_root_signature()` + `io`/`mem` buffers for those pipelines.
-
-### #10 — `apps/victory/Cargo.toml` Unconditional `xcl` Dependency
-- **Problem:** `victory-gpu` gates `xcl` behind the `xcl-shaders` feature, but `apps/victory/Cargo.toml` still links `xcl` unconditionally, pulling `GPL-2.0-only` code into `victory.exe` (`GPL-3.0-or-later`).
-- **Action:** Gate `xcl` in `apps/victory/Cargo.toml` behind an optional feature (e.g. `xcl-bridge`) so pure `GPL-3.0-or-later` builds of `victory` remain clean.
-
-### #11 — Missing UMA Readback Sanity Check (`check_uma_import`) in `victory-gpu`
-- **Problem:** `Host::create()` in `crates/victory-gpu/src/host.rs` opens UMA windows via `OpenExistingHeapFromAddress` without verifying GPU visibility (unlike XCL's `check_uma_import`). Under Wine/Proton without `userfaultfd`, `OpenExistingHeapFromAddress` can succeed while the GPU reads zeros.
-- **Action:** Add a lightweight CPU-write → GPU-readback check on UMA initialization and fall back to shadow buffers if the check fails.
-
-### #12 — Depth Bounds Test Stripped in `GraphicsState`
-- **Problem:** Subobject `21` (`D3D12_DEPTH_STENCIL_DESC1`) in `crates/victory-gpu/src/pipeline/host.rs` drops `DepthBoundsTestEnable` when converted to `D3D12_DEPTH_STENCIL_DESC`.
-- **Action:** Preserve `DepthBoundsTestEnable` using a pipeline-state stream (`CreatePipelineState`) when enabled.
+### #13 — Missing `tests/xcl/data/**/*.bin` Synthetic Test Fixtures
+- **Problem:** `cargo test -p xcl --lib` fails on `hle::bcpack::tests::fixtures_decode_to_their_lanes` (`crates/xcl/src/hle/bcpack/tests.rs:37`) because the 14 synthetic `.bin` fixtures in `tests/xcl/data/bcpack/` (15 `.bin` files total in `upstream/xcl/tests/data/`) were excluded by `.gitignore`'s `*.bin` rule during the merge, even though `xtask/src/policy.rs` already exempts `tests/xcl/`.
+- **Action:** Add `!/tests/xcl/data/**/*.bin` to `.gitignore` and restore the synthetic `.bin` test fixtures.
 
 ---
 
@@ -40,3 +27,7 @@ Tracked issues for the merged **VIctory + XCL** workspace (`shadshuvo/GanduTheft
 - **#5** — Ported lazy physical-page commit (`lazy.rs`) into `victory-hle` and `rdpru`/`rdpid`/`clzero`-loop Zen 2 emulation into `victory-loader` (`44fd82f`).
 - **#7** — Wired `VirtualFree` UMA hook, `XMemVirtualAlloc` UMA routing, `Wave64`-on-`Wave32` device detection, and immediate arena sweep (`6d45a03`).
 - **#8** — Set explicit `GPL-2.0-only` on `crates/xcl` / `tests/xcl/*` and gated `xcl` behind `xcl-shaders` in `victory-gpu` (`c97ac76`).
+- **#9** — Tagged XCL-ABI shaders (`VSH2`) and bound XCL's `u0..u5` ABI root signature + UMA/io UAVs in `pipeline/host.rs` and `draw.rs` (`9017879`).
+- **#10** — Gated `xcl` behind `xcl-bridge` in `apps/victory/Cargo.toml` (`de24fc8`).
+- **#11** — Added `verify_uma_import()` GPU readback check on UMA initialization in `victory-gpu/src/host.rs` (`88a172a`).
+- **#12** — Preserved `DepthBoundsTestEnable` via `D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL1` stream in `pipeline/host.rs` (`88a172a`).
