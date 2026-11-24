@@ -84,6 +84,24 @@ cargo build --release -p victory
 cargo build --release -p xcl -p xcl-testtitle -p testgame-mw
 ```
 
+## Unified Runtime CLI
+
+`victory` now integrates `xcl` directly as a selectable runtime backend and subcommand:
+
+```powershell
+# Run using the default VIctory runtime
+victory run <path/to/game.exe> --execute
+
+# Run using the integrated XCL backend
+victory run <path/to/game.exe> --backend xcl --execute
+
+# Use XCL's disassembler, shader analyzer, or RPF9 tools via victory
+victory xcl inspect <file.exe>
+victory xcl disasm <shader_file>
+victory xcl shaders <path_or_rpf>
+victory xcl rpf <archive.rpf>
+```
+
 ---
 
 ## Running Tests

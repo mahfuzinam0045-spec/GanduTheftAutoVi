@@ -88,6 +88,9 @@ enum Command {
     /// Prepare, map and bind a title executable; with --execute, run it.
     Run {
         exe: PathBuf,
+        /// Runtime backend to use when executing (`victory` or `xcl`).
+        #[arg(long, value_enum, default_value_t = Backend::Victory)]
+        backend: Backend,
         /// What unimplemented imports do when called.
         #[arg(long, value_enum, default_value_t = Unimplemented::Trap)]
         unimplemented: Unimplemented,
@@ -105,8 +108,47 @@ enum Command {
         #[arg(last = true)]
         title_args: Vec<String>,
     },
+    /// Delegate directly to the integrated XCL runtime tools.
+    Xcl {
+        #[command(subcommand)]
+        action: XclAction,
+    },
     /// Show the resolved configuration and check it.
     Config,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum Backend {
+    Victory,
+    Xcl,
+}
+
+#[derive(Subcommand)]
+enum XclAction {
+    /// Inspect imports of a PE image using XCL's resolver.
+    Inspect {
+        file: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Disassemble console GPU code (RDNA2) via XCL.
+    Disasm {
+        file: PathBuf,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Analyze shader corpora or RPF9 archives via XCL.
+    Shaders {
+        path: PathBuf,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Inspect or extract RPF9 archives via XCL.
+    Rpf {
+        archive: PathBuf,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -122,6 +164,15 @@ enum Console {
 }
 
 fn main() -> Result<()> {
+    #[cfg(windows)]
+    if let Some(boot) = std::env::var_os("XCL_HOST") {
+        // SAFETY: Called at the very start of `main` before any worker threads are spawned.
+        unsafe { std::env::remove_var("XCL_HOST") };
+        let code = xcl::host::host_main(&PathBuf::from(boot));
+        anyhow::ensure!(code == 0, "xcl host exited with code {code}");
+        return Ok(());
+    }
+
     victory_core::logging::init("info");
     // The audio recorder `run` starts for `VICTORY_AUDIO_CAPTURE`.
     #[cfg(all(windows, feature = "diagnostics"))]
@@ -155,14 +206,40 @@ fn main() -> Result<()> {
         } => translate::run(paths, validate, pipelines, list, jobs),
         Command::Run {
             exe,
+            backend,
             unimplemented,
             strict,
             execute,
             console,
-            title_args: _,
-        } => run::run(&exe, unimplemented, strict, execute, console),
+            title_args,
+        } => match backend {
+            Backend::Victory => run::run(&exe, unimplemented, strict, execute, console),
+            Backend::Xcl => run_xcl_backend(&exe, execute, &title_args),
+        },
+        Command::Xcl { action } => run_xcl_action(action),
         Command::Config => show_config(),
     }
+}
+
+fn run_xcl_backend(exe: &std::path::Path, execute: bool, title_args: &[String]) -> Result<()> {
+    let code = if execute {
+        xcl::launcher::run(exe, title_args)
+    } else {
+        xcl::inspect::run(exe, false)
+    };
+    anyhow::ensure!(code == 0, "xcl backend exited with code {code}");
+    Ok(())
+}
+
+fn run_xcl_action(action: XclAction) -> Result<()> {
+    let code = match action {
+        XclAction::Inspect { file, json } => xcl::inspect::run(&file, json),
+        XclAction::Disasm { file, args } => xcl::disasm::run(&file, &args),
+        XclAction::Shaders { path, args } => xcl::shaders::run(&path, &args),
+        XclAction::Rpf { archive, args } => xcl::rpf::run(&archive, &args),
+    };
+    anyhow::ensure!(code == 0, "xcl command exited with code {code}");
+    Ok(())
 }
 
 fn show_config() -> Result<()> {
@@ -209,4 +286,43 @@ pub(crate) fn default_paths(paths: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
         "no paths given and none configured (see victory.example.toml)"
     );
     Ok(all)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cli_parses_default_and_xcl_backends() {
+        let default_cli = Cli::try_parse_from(["victory", "run", "game.exe"]).unwrap();
+        match default_cli.command {
+            Command::Run { backend, .. } => assert_eq!(backend, Backend::Victory),
+            _ => panic!("expected Run command"),
+        }
+
+        let xcl_cli =
+            Cli::try_parse_from(["victory", "run", "--backend", "xcl", "--execute", "game.exe"])
+                .unwrap();
+        match xcl_cli.command {
+            Command::Run {
+                backend, execute, ..
+            } => {
+                assert_eq!(backend, Backend::Xcl);
+                assert!(execute);
+            }
+            _ => panic!("expected Run command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_xcl_subcommands() {
+        let cli = Cli::try_parse_from(["victory", "xcl", "inspect", "title.exe", "--json"])
+            .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Xcl {
+                action: XclAction::Inspect { json: true, .. }
+            }
+        ));
+    }
 }
