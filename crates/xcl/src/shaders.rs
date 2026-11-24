@@ -586,6 +586,7 @@ impl Agg {
 
 enum Input {
     Pack { data: Vec<u8>, records: Vec<pack::Record> },
+    Sgd5(Vec<(String, Vec<u8>)>),
     Files(Vec<PathBuf>),
 }
 
@@ -593,6 +594,7 @@ impl Input {
     fn len(&self) -> usize {
         match self {
             Input::Pack { records, .. } => records.len(),
+            Input::Sgd5(records) => records.len(),
             Input::Files(f) => f.len(),
         }
     }
@@ -601,6 +603,7 @@ impl Input {
     fn get(&self, i: usize) -> (String, Option<Vec<u8>>) {
         match self {
             Input::Pack { data, records } => (format!("{} @{:#x}", records[i].name, records[i].offset), pack::inflate(data, &records[i])),
+            Input::Sgd5(records) => (records[i].0.clone(), Some(records[i].1.clone())),
             Input::Files(f) => (f[i].display().to_string(), std::fs::read(&f[i]).ok()),
         }
     }
@@ -706,6 +709,18 @@ pub fn run(path: &Path, args: &[String]) -> i32 {
             let records = pack::scan(&data, 0x40);
             let what = format!("RPF9 package {:.1} MB, {} shader records", data.len() as f64 / 1048576.0, records.len());
             (Input::Pack { data, records }, what)
+        } else if victory_game::sgd5::is_sgd5(&data) {
+            let records: Vec<(String, Vec<u8>)> = victory_game::sgd5::records(&data)
+                .filter_map(|r| {
+                    let label = match r.name {
+                        Some(n) => format!("{n} @{:#x}", r.offset),
+                        None => format!("sgd5@{:#x}", r.offset),
+                    };
+                    r.unpack().map(|bytes| (label, bytes))
+                })
+                .collect();
+            let what = format!("SGD5 archive {:.1} MB, {} shader records", data.len() as f64 / 1048576.0, records.len());
+            (Input::Sgd5(records), what)
         } else {
             let mut a = Agg { recomp_on, keep: compile, iface_on, ..Default::default() };
             a.add(&path.display().to_string(), &data);

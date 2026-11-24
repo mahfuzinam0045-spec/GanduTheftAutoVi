@@ -69,12 +69,66 @@ fn build() -> &'static [u8; 32] {
 
 /// The translation of a console shader container, from the cache when
 /// there is one.
+///
+/// Uses `victory-shader` first (matching VIctory's root signature ABI), and
+/// falls back to XCL's `gpu::recomp` / `gpu::dxil` backend when
+/// `victory-shader` cannot translate a program (or when `VICTORY_XCL_SHADERS=1`).
 pub(crate) fn host_shader(container: &[u8]) -> Result<HostShader, String> {
-    let translate = |c: &[u8]| victory_shader::emit::translate(c).map_err(|e| e.to_string());
+    let translate = |c: &[u8]| translate_with_xcl_fallback(c);
     match CACHE.get() {
         Some(cache) => cached(cache, build(), container, translate),
         None => translate(container),
     }
+}
+
+fn translate_with_xcl_fallback(container: &[u8]) -> Result<HostShader, String> {
+    let prefer_xcl = std::env::var("VICTORY_XCL_SHADERS").is_ok_and(|v| v == "1");
+    if !prefer_xcl {
+        match victory_shader::emit::translate(container) {
+            Ok(shader) => return Ok(shader),
+            Err(err) => {
+                if let Ok(shader) = translate_via_xcl(container) {
+                    tracing::debug!("shader translated via XCL backend fallback (after victory-shader: {err})");
+                    return Ok(shader);
+                }
+                return Err(err.to_string());
+            }
+        }
+    }
+    translate_via_xcl(container)
+        .or_else(|_| victory_shader::emit::translate(container).map_err(|e| e.to_string()))
+}
+
+fn translate_via_xcl(container: &[u8]) -> Result<HostShader, String> {
+    use xcl::gpu::recomp::pso::{self, Stage};
+    let parsed = xcl::gpu::xbox::parse(container)
+        .ok_or_else(|| "not an Xbox Series shader container".to_string())?;
+    let hw = parsed
+        .fssm
+        .iter()
+        .flat_map(|f| f.stages.iter())
+        .map(|s| s.hw)
+        .next()
+        .ok_or_else(|| "no hardware stage in FSSM".to_string())?;
+    let (stage, xcl_stage) = match hw {
+        4 => (HwStage::Vs, Stage::Vertex),
+        5 => (HwStage::Ps, Stage::Pixel),
+        6 => (HwStage::Cs, Stage::Compute),
+        7 => (HwStage::Ms, Stage::Compute),
+        other => return Err(format!("unsupported hw stage {other} for XCL fallback")),
+    };
+    let compiled = pso::console_to_dxil_for(container, xcl_stage, 0, false)?;
+    let samplers: Vec<[u32; 4]> = compiled.samplers.iter().map(|&(w, _)| w).collect();
+    let static_samplers = samplers.iter().copied().map(StaticSampler::from_words).collect();
+    Ok(HostShader {
+        stage,
+        dxil: compiled.dxil,
+        user_data: Vec::new(),
+        samplers,
+        static_samplers,
+        root_cbvs: Vec::new(),
+        root_srvs: Vec::new(),
+    })
 }
 
 /// The cache entry's converter: the build and the container in, the
