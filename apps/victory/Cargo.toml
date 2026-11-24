@@ -13,6 +13,7 @@ victory-pe.workspace = true
 victory-loader.workspace = true
 victory-hle.workspace = true
 victory-shader = { workspace = true, features = ["host"] }
+victory-formats.workspace = true
 victory-game.workspace = true
 xcl.workspace = true
 anyhow.workspace = true

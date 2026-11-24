@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use anyhow::Result;
+use victory_formats::rpf9;
 use victory_game::sgd5;
 use victory_shader::gfx10::{self, Instruction};
 use victory_shader::{Container, DxilProgram, FourCC, HwStage, ShaderError, native_programs};
@@ -12,10 +13,11 @@ use victory_shader::{Container, DxilProgram, FourCC, HwStage, ShaderError, nativ
 /// Files above this size are skipped (read whole into memory for now).
 pub(crate) const MAX_FILE: u64 = 2 << 30;
 
-/// A shader container in a file: as is, or packed in an SGD5 record.
+/// A shader container in a file: as is, or packed in an SGD5 / RPF9 record.
 pub(crate) enum Source<'a> {
     Raw { offset: usize, data: &'a [u8] },
     Packed(sgd5::Record<'a>),
+    Rpf9 { data: &'a [u8], record: rpf9::Record },
 }
 
 impl Source<'_> {
@@ -24,6 +26,7 @@ impl Source<'_> {
         match self {
             Source::Raw { data, .. } => Some(Cow::Borrowed(data)),
             Source::Packed(r) => r.unpack().map(Cow::Owned),
+            Source::Rpf9 { data, record } => rpf9::inflate(data, record).map(Cow::Owned),
         }
     }
 
@@ -31,16 +34,24 @@ impl Source<'_> {
         match self {
             Source::Raw { offset, .. } => format!("@{offset:#x}"),
             Source::Packed(r) => format!("@{:#x} {}", r.offset, r.name.unwrap_or("?")),
+            Source::Rpf9 { record, .. } => format!("@{:#x} {}", record.offset, record.name),
         }
     }
 }
 
-/// The packed records of SGD5 data, and every container stored as is (the
+/// The packed records of SGD5 / RPF9 data, and every container stored as is (the
 /// executable keeps some records uncompressed), found by its magic.
 pub(crate) fn sources(data: &[u8]) -> Vec<Source<'_>> {
     let mut out: Vec<Source<'_>> = Vec::new();
     if sgd5::is_sgd5(data) {
         out.extend(sgd5::records(data).map(Source::Packed));
+    }
+    if data.starts_with(rpf9::RPF9_MAGIC) {
+        out.extend(
+            rpf9::scan(data, 0x40)
+                .into_iter()
+                .map(|record| Source::Rpf9 { data, record }),
+        );
     }
     let raw = memchr::memmem::find_iter(data, b"DXBC")
         .filter(|&offset| Container::parse(&data[offset..]).is_ok())

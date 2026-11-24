@@ -6,5 +6,8 @@
 //! hardware decompression.
 
 pub mod bcpack;
+pub mod rpf9;
 pub mod texture;
+pub mod tiling;
+mod tiling_tables;
 pub mod xma;
