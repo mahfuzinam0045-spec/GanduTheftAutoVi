@@ -101,7 +101,7 @@ fn test_title_runs_and_game_folder_is_untouched() {
     let _ = std::fs::remove_dir_all(&root);
     let game = root.join("game");
     let data = root.join("data");
-    copy_dir(&manifest.join("..").join("..").join("tests").join("data").join("testgame"), &game);
+    copy_dir(&manifest.join("..").join("..").join("tests").join("xcl").join("data").join("testgame"), &game);
     std::fs::copy(&title, game.join("xcl_testtitle.exe")).unwrap();
     std::fs::copy(&dll, game.join("testgame_mw.dll")).unwrap();
     let before = snapshot(&game);
@@ -259,7 +259,7 @@ fn test_title_draws_with_a_root_signature_under_the_debug_layer() {
     let root = manifest.join("..").join("..").join("target").join("e2e-debug-layer");
     let _ = std::fs::remove_dir_all(&root);
     let (game, data) = (root.join("game"), root.join("data"));
-    copy_dir(&manifest.join("..").join("..").join("tests").join("data").join("testgame"), &game);
+    copy_dir(&manifest.join("..").join("..").join("tests").join("xcl").join("data").join("testgame"), &game);
     for f in ["xcl_testtitle.exe", "testgame_mw.dll"] {
         std::fs::copy(bin_dir.join(f), game.join(f)).unwrap_or_else(|e| panic!("{f}: {e} – build first: cargo build --workspace"));
     }

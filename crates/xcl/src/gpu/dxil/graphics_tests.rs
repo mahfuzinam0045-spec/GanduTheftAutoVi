@@ -94,8 +94,8 @@ impl From<BinOpF> for crate::gpu::dxil::module::BinOp {
     }
 }
 
-const DXC_VS_BASIC: &[u8] = include_bytes!("../../../../../tests/data/dxil/dxc_vs_basic.dxil");
-const DXC_PS_BASIC: &[u8] = include_bytes!("../../../../../tests/data/dxil/dxc_ps_basic.dxil");
+const DXC_VS_BASIC: &[u8] = include_bytes!("../../../../../tests/xcl/data/dxil/dxc_vs_basic.dxil");
+const DXC_PS_BASIC: &[u8] = include_bytes!("../../../../../tests/xcl/data/dxil/dxc_ps_basic.dxil");
 
 #[test]
 fn vs_basic_parts_match_dxc() {
@@ -301,10 +301,10 @@ fn ms_basic() -> Vec<u8> {
     s.finish_graphics(io, info)
 }
 
-const DXC_PS_MODES: &[u8] = include_bytes!("../../../../../tests/data/dxil/dxc_ps_modes.dxil");
-const DXC_PS_PACKING: &[u8] = include_bytes!("../../../../../tests/data/dxil/dxc_ps_packing.dxil");
-const DXC_VS_PACKING: &[u8] = include_bytes!("../../../../../tests/data/dxil/dxc_vs_packing.dxil");
-const DXC_MS_BASIC: &[u8] = include_bytes!("../../../../../tests/data/dxil/dxc_ms_basic.dxil");
+const DXC_PS_MODES: &[u8] = include_bytes!("../../../../../tests/xcl/data/dxil/dxc_ps_modes.dxil");
+const DXC_PS_PACKING: &[u8] = include_bytes!("../../../../../tests/xcl/data/dxil/dxc_ps_packing.dxil");
+const DXC_VS_PACKING: &[u8] = include_bytes!("../../../../../tests/xcl/data/dxil/dxc_vs_packing.dxil");
+const DXC_MS_BASIC: &[u8] = include_bytes!("../../../../../tests/xcl/data/dxil/dxc_ms_basic.dxil");
 
 #[test]
 fn ps_modes_parts_match_dxc() {
@@ -668,9 +668,9 @@ fn vs_control() -> Vec<u8> {
 }
 
 
-const DXC_MS_PAYLOAD: &[u8] = include_bytes!("../../../../../tests/data/dxil/dxc_ms_payload.dxil");
-const DXC_PS_OUTPUTS: &[u8] = include_bytes!("../../../../../tests/data/dxil/dxc_ps_outputs.dxil");
-const DXC_VS_CONTROL: &[u8] = include_bytes!("../../../../../tests/data/dxil/dxc_vs_control.dxil");
+const DXC_MS_PAYLOAD: &[u8] = include_bytes!("../../../../../tests/xcl/data/dxil/dxc_ms_payload.dxil");
+const DXC_PS_OUTPUTS: &[u8] = include_bytes!("../../../../../tests/xcl/data/dxil/dxc_ps_outputs.dxil");
+const DXC_VS_CONTROL: &[u8] = include_bytes!("../../../../../tests/xcl/data/dxil/dxc_vs_control.dxil");
 
 #[test]
 fn ms_payload_parts_match_dxc() {
@@ -836,8 +836,8 @@ fn vs_clip_rows() -> Vec<u8> {
     s.finish_graphics(io, StageInfo::Vertex)
 }
 
-const DXC_VS_CLIP: &[u8] = include_bytes!("../../../../../tests/data/dxil/dxc_vs_clip.dxil");
-const DXC_VS_CLIP_ROWS: &[u8] = include_bytes!("../../../../../tests/data/dxil/dxc_vs_clip_rows.dxil");
+const DXC_VS_CLIP: &[u8] = include_bytes!("../../../../../tests/xcl/data/dxil/dxc_vs_clip.dxil");
+const DXC_VS_CLIP_ROWS: &[u8] = include_bytes!("../../../../../tests/xcl/data/dxil/dxc_vs_clip_rows.dxil");
 
 #[test]
 fn vs_clip_parts_match_dxc() {
@@ -854,7 +854,7 @@ fn vs_clip_rows_parts_match_dxc() {
     assert_valid(&c);
 }
 
-const DXC_PS_EARLY: &[u8] = include_bytes!("../../../../../tests/data/dxil/dxc_ps_early.dxil");
+const DXC_PS_EARLY: &[u8] = include_bytes!("../../../../../tests/xcl/data/dxil/dxc_ps_early.dxil");
 
 /// `tests/data/dxil/dxc_ps_early.hlsl`: `[earlydepthstencil]` (shader flag only).
 #[test]
@@ -874,7 +874,7 @@ fn ps_early_depth_matches_dxc() {
     assert!(dis.contains("!{i32 0, i64 8}"), "{dis}");
 }
 
-const DXC_VS_UAV: &[u8] = include_bytes!("../../../../../tests/data/dxil/dxc_vs_uav.dxil");
+const DXC_VS_UAV: &[u8] = include_bytes!("../../../../../tests/xcl/data/dxil/dxc_vs_uav.dxil");
 
 /// `tests/data/dxil/dxc_vs_uav.hlsl`: a bound UAV in a vertex shader needs the
 /// UAVs-at-every-stage flag.
@@ -1076,8 +1076,8 @@ fn ps_16bit(native: bool) -> Vec<u8> {
     s.finish_graphics(io, StageInfo::Pixel { early_depth_stencil: false })
 }
 
-const DXC_PS_MIN16: &[u8] = include_bytes!("../../../../../tests/data/dxil/dxc_ps_min16.dxil");
-const DXC_PS_NATIVE16: &[u8] = include_bytes!("../../../../../tests/data/dxil/dxc_ps_native16.dxil");
+const DXC_PS_MIN16: &[u8] = include_bytes!("../../../../../tests/xcl/data/dxil/dxc_ps_min16.dxil");
+const DXC_PS_NATIVE16: &[u8] = include_bytes!("../../../../../tests/xcl/data/dxil/dxc_ps_native16.dxil");
 
 #[test]
 fn ps_16bit_signatures_match_dxc() {
@@ -1103,8 +1103,8 @@ fn groupshared_bytes_follow_the_16bit_layout() {
     assert_eq!(s.m.global_bytes(3), 36);
 }
 
-const DXC_CS_RESOURCES: &[u8] = include_bytes!("../../../../../tests/data/dxil/dxc_cs_resources.dxil");
-const DXC_PS_RESOURCES: &[u8] = include_bytes!("../../../../../tests/data/dxil/dxc_ps_resources.dxil");
+const DXC_CS_RESOURCES: &[u8] = include_bytes!("../../../../../tests/xcl/data/dxil/dxc_cs_resources.dxil");
+const DXC_PS_RESOURCES: &[u8] = include_bytes!("../../../../../tests/xcl/data/dxil/dxc_ps_resources.dxil");
 
 /// `tests/data/dxil/dxc_cs_resources.hlsl`: statically bound SRVs of every buffer
 /// kind and a texture (space 1), a cbuffer, a sampler and a comparison

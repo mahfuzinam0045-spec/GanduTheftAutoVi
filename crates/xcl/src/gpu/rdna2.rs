@@ -785,7 +785,7 @@ mod tests {
     /// mnemonic and instruction length with LLVM's expectations.
     #[test]
     fn llvm_gfx10_corpus() {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/data/llvm-amdgpu");
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/xcl/data/llvm-amdgpu");
         let mut total = 0usize;
         let mut decoded = 0usize;
         let mut name_ok = 0usize;

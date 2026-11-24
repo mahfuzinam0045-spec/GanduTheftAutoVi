@@ -1492,7 +1492,7 @@ fn gpu_sdwa_dpp_and_cross_lane() {
 #[test]
 fn buffer_format_table_matches_llvm() {
     // every BUF_FMT_* in LLVM's gfx10 MTBUF tests must decode to the same name
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/data/llvm-amdgpu");
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/xcl/data/llvm-amdgpu");
     let mut checked = 0;
     for e in std::fs::read_dir(&dir).unwrap().flatten() {
         for line in std::fs::read_to_string(e.path()).unwrap_or_default().lines() {

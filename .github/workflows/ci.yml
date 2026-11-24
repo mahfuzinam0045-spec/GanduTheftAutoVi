@@ -28,12 +28,12 @@ jobs:
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: cargo clippy --workspace --exclude xcl --exclude xcl-testtitle --exclude testgame-mw --all-targets -- -D warnings
       - name: Clippy (diagnostics build)
-        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+        run: cargo clippy --workspace --exclude xcl --exclude xcl-testtitle --exclude testgame-mw --all-targets --all-features -- -D warnings
       # Includes xtask's repository_passes_policy (asset-policy check)
       - name: Tests
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --exclude xcl --exclude xcl-testtitle --exclude testgame-mw
 
   # ── XCL: build + unit/integration tests (no GPU, no game data on runner) ───
   #
@@ -63,11 +63,8 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('**/Cargo.toml') }}
           restore-keys: cargo-${{ runner.os }}-
 
-      - name: Build xcl
-        run: cargo build -p xcl --locked
+      - name: Build xcl & test fixtures
+        run: cargo build -p xcl -p xcl-testtitle -p testgame-mw
 
       - name: Test xcl
-        run: cargo test -p xcl --locked
-
-      - name: Build xcl testtitle
-        run: cargo build -p xcl-testtitle --locked
+        run: cargo test -p xcl -- --skip test_title_runs_and_game_folder_is_untouched

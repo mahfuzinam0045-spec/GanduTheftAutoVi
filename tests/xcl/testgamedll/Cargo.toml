@@ -2,7 +2,7 @@
 name = "testgame-mw"
 description = "Fake game-shipped middleware DLL used by the XCL test title."
 version.workspace = true
-edition.workspace = true
+edition = "2021"
 license.workspace = true
 publish = false
 

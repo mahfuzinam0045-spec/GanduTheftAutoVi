@@ -5,7 +5,7 @@
 use super::{can_decode, decode, Error};
 
 fn data(name: &str) -> Option<Vec<u8>> {
-    std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/data/bcpack").join(name)).ok()
+    std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/xcl/data/bcpack").join(name)).ok()
 }
 
 /// `bc<mode>-<units>-<seed>`, units of 8 bytes of output: (mode, units)

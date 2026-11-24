@@ -55,6 +55,8 @@
 *.ktx2
 *.dxbc
 *.dxil
+# Synthetic DXIL test fixtures for XCL
+!/tests/xcl/data/dxil/*.dxil
 *.cso
 *.spv
 *.wav

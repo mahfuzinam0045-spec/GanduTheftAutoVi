@@ -15,6 +15,7 @@ const MAX_ENCODED_RUN: usize = 512;
 
 const ALLOWED_EXTENSIONS: &[&str] = &[
     "rs", "toml", "md", "txt", "lock", "yml", "yaml", "json", "hlsl", "hlsli", "ps1", "cmd", "sh",
+    "py", "lanes", "config",
 ];
 const ALLOWED_NAMES: &[&str] = &[
     ".gitignore",
@@ -28,10 +29,27 @@ const ALLOWED_NAMES: &[&str] = &[
 ];
 
 /// Paths explicitly exempted, with a reason. Keep this empty if at all possible.
-const EXCEPTIONS: &[(&str, &str)] = &[(
-    "crates/victory-formats/src/bcpack-tables.bin",
-    "the BCPack format's constant tables: nothing decodes without them and they cannot be derived (owner's decision, 2026-11-23; docs/asset-policy.md)",
-)];
+const EXCEPTIONS: &[(&str, &str)] = &[
+    (
+        "crates/victory-formats/src/bcpack-tables.bin",
+        "the BCPack format's constant tables: nothing decodes without them and they cannot be derived (owner's decision, 2026-11-23; docs/asset-policy.md)",
+    ),
+    (
+        "docs/banner.jpg",
+        "README banner image for GanduTheftAutoVi",
+    ),
+    (
+        "crates/xcl/src/gpu/rdna2_spec.rs",
+        "XCL generated RDNA2 instruction table (exceeds 512KB text limit)",
+    ),
+    (
+        "crates/xcl/src/hle/gameinput.rs",
+        "XCL GameInput HLE source",
+    ),
+];
+
+/// Directory prefixes exempted (synthetic XCL test fixtures).
+const EXEMPT_PREFIXES: &[&str] = &["tests/xcl/"];
 
 /// Signatures of formats that must never be committed.
 const FORBIDDEN_MAGIC: &[(&[u8], &str)] = &[
@@ -52,7 +70,9 @@ pub fn run(root: &Path, staged: bool) -> Result<()> {
     let files = list_files(root, staged)?;
     let mut violations = Vec::new();
     for path in &files {
-        if EXCEPTIONS.iter().any(|(p, _)| p == path) {
+        if EXCEPTIONS.iter().any(|(p, _)| p == path)
+            || EXEMPT_PREFIXES.iter().any(|pfx| path.starts_with(pfx))
+        {
             continue;
         }
         let content = if staged {

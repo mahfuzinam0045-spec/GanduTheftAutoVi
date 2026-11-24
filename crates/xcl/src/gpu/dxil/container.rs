@@ -450,7 +450,7 @@ mod tests {
 
     /// DXC 1.9 output for a 64-thread compute shader storing to two root UAVs
     /// (see `tests/data/dxil/*.hlsl`).
-    const DXC_CS: &[u8] = include_bytes!("../../../../../tests/data/dxil/dxc_cs_raw_uav.dxil");
+    const DXC_CS: &[u8] = include_bytes!("../../../../../tests/xcl/data/dxil/dxc_cs_raw_uav.dxil");
 
     #[test]
     fn digest_matches_dxc_signed_container() {
