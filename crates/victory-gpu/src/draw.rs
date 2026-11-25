@@ -336,6 +336,51 @@ pub(crate) fn window_line(frames: f64) {
     );
 }
 
+/// A table made afresh: what it was made from (the `n` records at `at` in
+/// [`State::fresh_records`]) and its first dynamic slot.
+struct Fresh {
+    table: u64,
+    n: u32,
+    at: usize,
+    first: u32,
+}
+
+/// A hash that is mixed already, used as it is.
+#[derive(Default)]
+struct Plain(u64);
+
+impl std::hash::Hasher for Plain {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0 << 8) | u64::from(b);
+        }
+    }
+    fn write_u64(&mut self, x: u64) {
+        self.0 = x;
+    }
+}
+
+/// A quick hash of `table` and its `n` records. It only finds the table made
+/// before: the records are compared too, so a collision costs a copy, not
+/// wrong descriptors.
+fn table_hash(table: u64, n: u32) -> u64 {
+    let mix = |h: u64, x: u64| (h.rotate_left(5) ^ x).wrapping_mul(0x517c_c1b7_2722_0a95);
+    let h = (0..n).fold(table, |h, k| {
+        let [a, b, c] = record(table, k);
+        mix(mix(h, u64::from(a) | (u64::from(b) << 32)), u64::from(c))
+    });
+    h ^ (h >> 32)
+}
+
+/// The words of entry `k` of `table`.
+fn record(table: u64, k: u32) -> [u32; 3] {
+    // SAFETY: a descriptor slot in title memory.
+    unsafe { ((table + u64::from(k) * 32) as *const [u32; 3]).read_unaligned() }
+}
+
 /// What one title list has set, and what its host list was last given.
 #[derive(Default)]
 pub(crate) struct State {
@@ -386,9 +431,11 @@ pub(crate) struct State {
     /// Graphics, compute.
     host_roots: [usize; 2],
     host_heaps: [usize; 2],
-    /// Tables made afresh in this list: (table, slot count, contents) → first
-    /// dynamic slot.
-    fresh_tables: std::collections::HashMap<(u64, u32, u64), u32>,
+    /// Tables made afresh in this list, by a hash of the table and what it
+    /// holds ([`table_hash`]).
+    fresh_tables: std::collections::HashMap<u64, Fresh, std::hash::BuildHasherDefault<Plain>>,
+    /// The record words of [`Fresh`] tables, one after the other.
+    fresh_records: Vec<[u32; 3]>,
     /// The dynamic slots the list holds: title heap, first, count; given
     /// back when the list has run, is reset or released.
     dynamic: Vec<(usize, u32, u32)>,
@@ -431,6 +478,7 @@ impl State {
             crate::descriptor::release_dynamic(heap, first, n);
         }
         self.fresh_tables.clear();
+        self.fresh_records.clear();
         self.root_srv_slots.clear();
         self.root_uav_slots.clear();
         self.tables_gone = true;
@@ -1156,10 +1204,7 @@ impl State {
             // SAFETY: an open list and a live pipeline.
             unsafe { l.SetPipelineState(&p.pso) };
             self.host_pipeline = p.pso.as_raw() as usize;
-            list.used_pipeline(&p.name);
-            // The title may release the pipeline before it submits the list.
-            list.keep(&p.pso);
-            list.keep(&p.root);
+            list.bind_pipeline(p);
         }
         if p.xcl_abi {
             if let Some(host) = crate::host::host() {
@@ -1214,7 +1259,14 @@ impl State {
                 None
             };
             if let Some((param, dwords)) = stage.user_data {
-                let mut values = vec![0u32; dwords as usize];
+                let mut stack = [0u32; 64];
+                let mut heap_buf = Vec::new();
+                let values = if (dwords as usize) <= stack.len() {
+                    &mut stack[..dwords as usize]
+                } else {
+                    heap_buf.resize(dwords as usize, 0);
+                    &mut heap_buf[..]
+                };
                 for u in &t.host.user_data {
                     if let RootType::Other(kind) = u.root {
                         values[u.index as usize] =
@@ -2822,17 +2874,16 @@ impl State {
                 continue;
             }
             // The table and what its entries hold (record words).
-            let key = {
-                use std::hash::{Hash, Hasher};
-                let mut h = std::collections::hash_map::DefaultHasher::new();
-                for k in 0..n {
-                    let at = table + u64::from(k) * 32;
-                    // SAFETY: a descriptor slot in title memory.
-                    unsafe { (at as *const [u32; 3]).read_unaligned() }.hash(&mut h);
-                }
-                (table, n, h.finish())
-            };
-            if let Some(&first) = self.fresh_tables.get(&key) {
+            let key = table_hash(table, n);
+            let same = self.fresh_tables.get(&key).filter(|f| {
+                f.table == table
+                    && f.n == n
+                    && self.fresh_records[f.at..f.at + n as usize]
+                        .iter()
+                        .enumerate()
+                        .all(|(k, r)| *r == record(table, k as u32))
+            });
+            if let Some(&Fresh { first, .. }) = same {
                 for u in entries.iter().filter(|u| u.kind != ResourceType::Cbv) {
                     let handle = table + u64::from(u.table_offset_dwords) * 4;
                     if let Some(view) = crate::descriptor::view(handle) {
@@ -2859,7 +2910,9 @@ impl State {
                 made.push((slot, u32::MAX));
                 continue;
             };
-            self.fresh_tables.insert(key, first);
+            let at = self.fresh_records.len();
+            self.fresh_records.extend((0..n).map(|k| record(table, k)));
+            self.fresh_tables.insert(key, Fresh { table, n, at, first });
             self.dynamic
                 .push((std::ptr::from_ref(heap) as usize, first, n));
             // The title's own slots of this table: what the draw reads of

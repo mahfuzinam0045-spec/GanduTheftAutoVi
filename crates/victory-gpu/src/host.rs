@@ -1664,7 +1664,7 @@ impl Drop for Counted {
 /// A chunk of upload memory for lists' scratch data: the buffer, its
 /// mapping and its host GPU address.
 struct Chunk {
-    _buffer: ID3D12Resource,
+    buffer: ID3D12Resource,
     data: usize,
     gpu: u64,
 }
@@ -1763,7 +1763,7 @@ fn take_chunk(host: &Host, size: u64) -> Option<Chunk> {
     ALIVE[1].fetch_add(1, Ordering::Relaxed);
     ALIVE[2].fetch_add(size, Ordering::Relaxed);
     Some(Chunk {
-        _buffer: buffer,
+        buffer,
         data: data as usize,
         gpu,
     })
@@ -2182,6 +2182,9 @@ struct Deferred {
     /// descriptor heaps): the title may release its objects before it
     /// submits the list.
     kept: Vec<windows::core::IUnknown>,
+    /// Host pipelines [`HostList::bind_pipeline`] kept (by `ID3D12PipelineState`
+    /// address), so a pipeline the list binds again is not kept again.
+    bound: std::collections::HashSet<usize>,
     /// Buffer ranges refreshed since the last title copy (host copy,
     /// address, bytes): refreshing them again would find the same bytes.
     refreshed: std::collections::HashSet<(usize, usize, usize)>,
@@ -6774,18 +6777,26 @@ impl HostList {
             && self.twins.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
     }
 
-    /// Notes a pipeline the list binds; called where it is bound.
-    pub(crate) fn used_pipeline(&self, name: &str) {
-        {
+    /// Notes a pipeline the list binds and keeps it and its root signature
+    /// until the list is reset, the first time only: the list keeps the
+    /// first, so its address names the same pipeline from then on.
+    pub(crate) fn bind_pipeline(&self, p: &crate::pipeline::host::HostPipeline) {
+        let mut deferred = self.deferred();
+        if deferred.bound.insert(p.pso.as_raw() as usize) {
+            deferred.kept.push(p.pso.clone().into());
+            deferred.kept.push(p.root.clone().into());
+            drop(deferred);
             let mut pipelines = self.pipelines.lock().unwrap_or_else(|e| e.into_inner());
-            if !pipelines.contains(name) {
-                pipelines.insert(name.to_owned());
+            if !pipelines.contains(&p.name) {
+                pipelines.insert(p.name.clone());
             }
+        } else {
+            drop(deferred);
         }
         if crate::cardmeter::pipelines() {
             // The pipeline before it ends here on the card's clock.
             crate::cardmeter::end(&self.list, crate::cardmeter::Span::from_raw(self.pipeline_meter.swap(u32::MAX, Ordering::Relaxed)));
-            self.pipeline_meter.store(crate::cardmeter::begin_named(&self.list, name).raw(), Ordering::Relaxed);
+            self.pipeline_meter.store(crate::cardmeter::begin_named(&self.list, &p.name).raw(), Ordering::Relaxed);
         }
     }
 
@@ -6877,20 +6888,28 @@ impl HostList {
             .any(|(at, what, n)| *at == address && *n >= bytes && matches!(what, crate::queue::Written::Value(v) if holds(*v)))
     }
 
-    /// A mapped upload buffer of `size` bytes, alive until the list is
-    /// reset.
-    ///
-    /// shortcut: one buffer per copy; pool them once uploads are frequent.
-    pub(crate) fn upload(&self, host: &Host, size: u64) -> Option<(ID3D12Resource, *mut u8)> {
-        let (buffer, data) = host.upload_buffer(size)?;
-        name(&buffer, || format!("list upload {size:#x}"));
-        self.deferred().hold_upload(buffer.clone(), size);
-        Some((buffer, data))
+    /// `size` bytes of mapped upload memory, 512-byte aligned for a placed
+    /// footprint, alive until the list is reset: the buffer, the offset in
+    /// it, and the CPU pointer.
+    pub(crate) fn upload(&self, size: u64) -> Option<(ID3D12Resource, u64, *mut u8)> {
+        self.scratch_in(size, 512, |buffer, at, _, data| (buffer.clone(), at, data))
     }
 
     /// `len` bytes of upload memory (256-byte aligned) until the list is
     /// reset: the host GPU address and the CPU pointer.
     pub(crate) fn scratch(&self, len: u64) -> Option<(u64, *mut u8)> {
+        self.scratch_in(len, 256, |_, _, gpu, data| (gpu, data))
+    }
+
+    /// `len` bytes of upload memory at a multiple of `align` until the list
+    /// is reset, handed to `f` with the buffer, the offset in it, the host GPU
+    /// address, and the CPU pointer.
+    fn scratch_in<R>(
+        &self,
+        len: u64,
+        align: u64,
+        f: impl FnOnce(&ID3D12Resource, u64, u64, *mut u8) -> R,
+    ) -> Option<R> {
         let host = host()?;
         let mut s = self.scratch.lock().unwrap_or_else(|e| e.into_inner());
         let len = len.max(1).next_multiple_of(256);
@@ -6899,12 +6918,15 @@ impl HostList {
             name(&buffer, || format!("list scratch {len:#x}"));
             // SAFETY: a live buffer.
             let gpu = unsafe { buffer.GetGPUVirtualAddress() };
+            let made = f(&buffer, 0, gpu, data);
             self.deferred().hold_upload(buffer, len);
-            return Some((gpu, data));
+            return Some(made);
         }
         // The chunk in use while `len` fits in what is left of it, else the
         // next one (a list's first chunk may be a small one).
-        while s.current < s.chunks.len() && s.used + len > s.chunks[s.current].1 {
+        while s.current < s.chunks.len()
+            && s.used.next_multiple_of(align) + len > s.chunks[s.current].1
+        {
             (s.current, s.used) = (s.current + 1, 0);
         }
         if s.current == s.chunks.len() {
@@ -6917,10 +6939,11 @@ impl HostList {
             s.chunks.push((chunk, size));
             s.used = 0;
         }
-        let (data, gpu) = (s.chunks[s.current].0.data, s.chunks[s.current].0.gpu);
-        let at = s.used;
-        s.used += len;
-        Some((gpu + at, (data + at as usize) as *mut u8))
+        let chunk = &s.chunks[s.current].0;
+        let at = s.used.next_multiple_of(align);
+        let made = f(&chunk.buffer, at, chunk.gpu + at, (chunk.data + at as usize) as *mut u8);
+        s.used = at + len;
+        Some(made)
     }
 
     /// The bytes of scratch chunks the list holds now (after a reset:
