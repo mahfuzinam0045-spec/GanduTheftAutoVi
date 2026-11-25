@@ -236,6 +236,29 @@ pub extern "C" fn exit(code: i32) -> ! {
     host::exit(code)
 }
 
+/// Immediate process exit (`_exit`, `_Exit`, `quick_exit` in UCRT/msvcrt).
+pub extern "C" fn _exit(code: i32) -> ! {
+    tracing::warn!(code, from = %host::callers(), "title _exit");
+    host::exit_process(code as u32)
+}
+
+/// Alias for [`_exit`].
+pub extern "C" fn _Exit(code: i32) -> ! {
+    _exit(code)
+}
+
+/// Alias for [`_exit`].
+pub extern "C" fn quick_exit(code: i32) -> ! {
+    _exit(code)
+}
+
+/// `kernel32!ExitProcess` / `api-ms-win-core-processthreads-l1-1-0!ExitProcess`:
+/// logs the exit code and caller before ending the process.
+pub extern "system" fn ExitProcess(code: u32) -> ! {
+    tracing::warn!(code, from = %host::callers(), "title ExitProcess");
+    host::exit_process(code)
+}
+
 /// The CRT's `abort` (also reached from `terminate`): logged like [`exit`].
 pub extern "C" fn abort() -> ! {
     tracing::error!(from = %host::callers(), "title aborts");
@@ -387,6 +410,10 @@ pub(crate) fn module() -> HleModule {
             hle_export!(OutputDebugStringA),
             hle_export!(OutputDebugStringW),
             hle_export!(exit),
+            hle_export!(_exit),
+            hle_export!(_Exit),
+            hle_export!(quick_exit),
+            hle_export!(ExitProcess),
             hle_export!(abort),
             hle_export!(terminate),
             hle_export!(_invalid_parameter_noinfo_noreturn),
@@ -414,7 +441,9 @@ mod host {
         DisableThreadLibraryCalls, GetModuleFileNameA, GetModuleFileNameW, GetModuleHandleA,
         GetModuleHandleW, GetProcAddress, LoadLibraryExA, LoadLibraryExW,
     };
-    use windows_sys::Win32::System::Threading::TerminateProcess;
+    use windows_sys::Win32::System::Threading::{
+        ExitProcess as HostExitProcess, TerminateProcess,
+    };
 
     unsafe extern "C" {
         #[link_name = "exit"]
@@ -486,6 +515,11 @@ mod host {
     pub(super) fn exit(code: i32) -> ! {
         // SAFETY: see above.
         unsafe { crt_exit(code) }
+    }
+
+    pub(super) fn exit_process(code: u32) -> ! {
+        // SAFETY: terminates the process with the title's exit code.
+        unsafe { HostExitProcess(code) }
     }
 
     pub(super) fn abort() -> ! {
