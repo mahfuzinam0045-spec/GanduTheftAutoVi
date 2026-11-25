@@ -13,6 +13,7 @@ pub mod apu;
 pub mod audio;
 #[cfg(windows)]
 pub mod bcrypt;
+pub mod bvh;
 pub mod d3d12x;
 pub mod display;
 pub mod dsp;
@@ -62,6 +63,9 @@ pub(crate) fn all() -> Vec<HleModule> {
     all.push(apu::module());
     #[cfg(windows)]
     all.push(bcrypt::module());
+    if bvh::enabled() {
+        all.push(bvh::module());
+    }
     #[cfg(windows)]
     all.push(media::module());
     #[cfg(windows)]
