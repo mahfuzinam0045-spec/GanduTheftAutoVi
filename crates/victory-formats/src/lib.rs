@@ -7,6 +7,7 @@
 
 pub mod awc;
 pub mod bcpack;
+pub mod fspx;
 pub mod psin;
 pub mod rbf0;
 pub mod rpf9;
