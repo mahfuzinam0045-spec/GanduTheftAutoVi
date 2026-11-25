@@ -35,6 +35,8 @@ pub mod speech;
 pub mod storage;
 pub mod xasync;
 pub mod xg;
+#[cfg(windows)]
+pub mod xg_oracle;
 pub mod xgame;
 pub mod xgameruntime;
 pub mod xgamesave;
