@@ -1020,7 +1020,7 @@ pub fn title_memory_written(at: usize, len: usize, pages: bool) {
         }
     }
     // A placed texture there changed with no descriptor written.
-    let _ = (at, len);
+    crate::descriptor::host::page_written(at, len);
 }
 
 /// The runtime mapped a view of the physical bytes `[offset, offset + len)`
@@ -1066,7 +1066,8 @@ pub struct Remapping(#[allow(dead_code)] std::sync::RwLockWriteGuard<'static, ()
 
 impl Drop for Remapping {
     fn drop(&mut self) {
-        let _ = self.1.elapsed();
+        // From asking for the lock until it is let go (the frame log).
+        crate::framelog::add(crate::framelog::T::RemapUs, self.1.elapsed().as_micros() as u64);
     }
 }
 
@@ -1077,6 +1078,8 @@ impl Drop for Remapping {
 pub fn title_memory_remapping() -> Remapping {
     let asked = std::time::Instant::now();
     let held = MAPPING.write().unwrap_or_else(|e| e.into_inner());
+    crate::framelog::add(crate::framelog::T::Remaps, 1);
+    crate::framelog::add(crate::framelog::T::RemapWaitUs, asked.elapsed().as_micros() as u64);
     Remapping(held, asked)
 }
 
@@ -1175,6 +1178,7 @@ fn install() {
         if open(&mut g, at, at + 1) {
             #[cfg(feature = "diagnostics")]
             crate::copystat::add(crate::copystat::C::GuardFaults, 1);
+            crate::framelog::add(crate::framelog::T::GuardFaults, 1);
             return EXCEPTION_CONTINUE_EXECUTION;
         }
         if writable(at) {
