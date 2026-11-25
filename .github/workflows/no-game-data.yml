@@ -1,0 +1,35 @@
+# Adapted from Leonida (.github/workflows/no-game-data.yml, GPL-3.0-or-later).
+name: No Game Data
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: no-game-data-${{ github.event_name }}-${{ github.event.pull_request.number || (github.event_name == 'push' && github.ref) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions: {}
+
+jobs:
+  no-game-data:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: No game data tracked
+        run: |
+          bad=$(git ls-files -z | grep -ziE '\.(rpf|ttpf|xvd|msixvc|dxbc|fssm|spv|spvasm|dds|bk2|awc|r9modeldata|obj|glb|ogg|wav|exe|dll)$' | tr '\0' '\n' || true)
+          if [ -n "$bad" ]; then
+            echo "Game or binary files tracked:"
+            echo "$bad"
+            exit 1
+          fi
+      - name: Asset policy check
+        run: cargo run -p xtask -- policy
