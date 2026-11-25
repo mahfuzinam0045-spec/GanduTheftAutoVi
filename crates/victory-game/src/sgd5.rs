@@ -29,9 +29,53 @@ pub struct Record<'a> {
 impl Record<'_> {
     /// The container, or `None` if the stream is corrupt.
     pub fn unpack(&self) -> Option<Vec<u8>> {
-        miniz_oxide::inflate::decompress_to_vec_with_limit(self.packed, self.unpacked_size)
-            .ok()
-            .filter(|out| out.len() == self.unpacked_size)
+        let mut state = zlib_rs::Inflate::new(false, 15);
+        let mut out = Vec::new();
+        let (mut in_pos, mut out_pos) = (0usize, 0usize);
+        loop {
+            if out_pos == self.unpacked_size {
+                let mut extra = [0u8; 1];
+                let status = state
+                    .decompress(
+                        &self.packed[in_pos..],
+                        &mut extra,
+                        zlib_rs::InflateFlush::NoFlush,
+                    )
+                    .ok()?;
+                return (status == zlib_rs::Status::StreamEnd
+                    && state.total_out() as usize == self.unpacked_size)
+                    .then_some(out);
+            }
+            if out_pos == out.len() {
+                let next_len = if out.is_empty() {
+                    self.unpacked_size
+                        .min(self.packed.len().saturating_mul(4).max(4096))
+                } else {
+                    out.len().saturating_mul(2).min(self.unpacked_size)
+                };
+                out.resize(next_len, 0);
+            }
+            let status = state
+                .decompress(
+                    &self.packed[in_pos..],
+                    &mut out[out_pos..],
+                    zlib_rs::InflateFlush::NoFlush,
+                )
+                .ok()?;
+            let next_in = state.total_in() as usize;
+            let next_out = state.total_out() as usize;
+            match status {
+                zlib_rs::Status::StreamEnd => {
+                    out.truncate(next_out);
+                    return (next_out == self.unpacked_size).then_some(out);
+                }
+                zlib_rs::Status::Ok if next_in != in_pos || next_out != out_pos => {
+                    in_pos = next_in;
+                    out_pos = next_out;
+                }
+                zlib_rs::Status::Ok | zlib_rs::Status::BufError => return None,
+            }
+        }
     }
 }
 
@@ -131,7 +175,13 @@ mod tests {
     use super::*;
 
     fn record_bytes(name: &str, kind: u8, payload: &[u8]) -> Vec<u8> {
-        let packed = miniz_oxide::deflate::compress_to_vec(payload, 6);
+        let mut buf = vec![0u8; zlib_rs::compress_bound(payload.len())];
+        let config = zlib_rs::DeflateConfig {
+            window_bits: -15,
+            ..zlib_rs::DeflateConfig::new(6)
+        };
+        let (packed, rc) = zlib_rs::compress_slice(&mut buf, payload, config);
+        assert_eq!(rc, zlib_rs::ReturnCode::Ok);
         let n = (packed.len() + 12) as u32;
         let mut out = vec![0xF4, 0x01, 0, 0, name.len() as u8 + 1];
         out.extend_from_slice(name.as_bytes());
@@ -139,7 +189,7 @@ mod tests {
         for v in [n, 0x000D_DCE7, n, payload.len() as u32] {
             out.extend_from_slice(&v.to_le_bytes());
         }
-        out.extend_from_slice(&packed);
+        out.extend_from_slice(packed);
         out
     }
 

@@ -175,6 +175,51 @@ unsafe fn emulate_amd_only(info: *mut EXCEPTION_POINTERS) -> bool {
                 return true;
             }
         }
+        // `mov rax, ptr; add ptr, 0x40; clzero; cmp ptr, end; jb -15` — zero [rax..end) in one exception.
+        if n >= 8
+            && (context.Rip as usize & 0xfff) >= 7
+            && std::env::var_os("VICTORY_CLZERO_LOOP15").as_deref()
+                != Some(std::ffi::OsStr::new("0"))
+            && bytes[..3] == [0x0f, 0x01, 0xfc]
+            && (bytes[3] & 0xf8) == 0x48
+            && (bytes[3] & 0x02) == 0
+            && bytes[4] == 0x39
+            && (bytes[5] >> 6) == 3
+            && bytes[6..8] == [0x72, 0xf1]
+        {
+            let end_reg = ((bytes[5] >> 3) & 7) | ((bytes[3] & 4) << 1);
+            let ptr_reg = (bytes[5] & 7) | ((bytes[3] & 1) << 3);
+            if ptr_reg != 0 && ptr_reg != 4 {
+                let mut before = [0u8; 7];
+                std::ptr::copy_nonoverlapping(code.sub(7), before.as_mut_ptr(), 7);
+                let hi = (ptr_reg >> 3) & 1;
+                let lo = ptr_reg & 7;
+                if before[0] == (0x48 | (hi << 2))
+                    && before[1] == 0x89
+                    && before[2] == (0xc0 | (lo << 3))
+                    && before[3] == (0x48 | hi)
+                    && before[4] == 0x83
+                    && before[5] == (0xc0 | lo)
+                    && before[6] == 0x40
+                {
+                    let rax = context.Rax as usize;
+                    let ptr = *gpr(context, ptr_reg) as usize;
+                    let end = *gpr(context, end_reg) as usize;
+                    if (rax & 63) == 0 && ptr == rax.wrapping_add(64) && ptr > rax {
+                        let more = if ptr < end { (end - ptr).div_ceil(64) } else { 0 };
+                        if let Some(last) = ptr.checked_add(more.saturating_mul(64))
+                            && last - rax < (2usize << 30)
+                        {
+                            (rax as *mut u8).write_bytes(0, last - rax);
+                            context.Rax = (last - 64) as u64;
+                            *gpr(context, ptr_reg) = last as u64;
+                            context.Rip += 3;
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
         match code.cast::<[u8; 3]>().read_unaligned() {
             [0x0f, 0x01, 0xfc] => ((context.Rax & !63) as *mut u8).write_bytes(0, 64),
             [0x0f, 0x01, 0xfd] => {
@@ -919,6 +964,48 @@ mod tests {
         assert_eq!(emulate(&[0x0f, 0x01, 0xfc], at, &mut xmm), Some(3));
         assert!(line.0[..64].iter().all(|&b| b == 0));
         assert!(line.0[64..].iter().all(|&b| b == 0xff));
+    }
+
+    #[test]
+    fn emulated_clzero_loop15_zeroes_whole_range() {
+        #[repr(align(64))]
+        struct Buf([u8; 320]);
+        let mut buf = Buf([0xaa; 320]);
+        let base = buf.0.as_mut_ptr() as u64;
+        // mov rax, rcx; add rcx, 0x40; clzero; cmp rcx, rdx; jb -15
+        let code: [u8; 15] = [
+            0x48, 0x89, 0xc8, // mov rax, rcx
+            0x48, 0x83, 0xc1, 0x40, // add rcx, 0x40
+            0x0f, 0x01, 0xfc, // clzero
+            0x48, 0x39, 0xd1, // cmp rcx, rdx
+            0x72, 0xf1, // jb -15
+        ];
+        // Ensure code+7 is not within 7 bytes of a page boundary in case heap alignment lands near one.
+        let mut page_safe = [0u8; 32];
+        let off = 16usize.saturating_sub(page_safe.as_ptr() as usize & 0xfff);
+        let start = if (page_safe.as_ptr() as usize + off) & 0xfff >= 7 {
+            off
+        } else {
+            off + 8
+        };
+        page_safe[start..start + 15].copy_from_slice(&code);
+        let mut record: EXCEPTION_RECORD = unsafe { std::mem::zeroed() };
+        record.ExceptionCode = EXCEPTION_ILLEGAL_INSTRUCTION;
+        let mut ctx: CONTEXT = unsafe { std::mem::zeroed() };
+        ctx.Rip = unsafe { page_safe.as_ptr().add(start + 7) } as u64;
+        ctx.Rax = base;
+        ctx.Rcx = base + 64; // ptr after first add rcx, 0x40
+        ctx.Rdx = base + 256; // end = 4 cache lines
+        let mut pointers = EXCEPTION_POINTERS {
+            ExceptionRecord: &mut record,
+            ContextRecord: &mut ctx,
+        };
+        assert!(unsafe { emulate_amd_only(&mut pointers) });
+        assert_eq!(ctx.Rip, unsafe { page_safe.as_ptr().add(start + 10) } as u64);
+        assert_eq!(ctx.Rax, base + 192);
+        assert_eq!(ctx.Rcx, base + 256);
+        assert!(buf.0[..256].iter().all(|&b| b == 0));
+        assert!(buf.0[256..].iter().all(|&b| b == 0xaa));
     }
 
     #[test]
