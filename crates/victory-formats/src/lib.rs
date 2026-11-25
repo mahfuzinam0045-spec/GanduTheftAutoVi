@@ -5,6 +5,7 @@
 //! BCPack textures, audio codecs (XMA2, Opus), and the zlib streams used by
 //! hardware decompression.
 
+pub mod awc;
 pub mod bcpack;
 pub mod rbf0;
 pub mod rpf9;
