@@ -16,7 +16,6 @@ pub(crate) struct Ty(u32);
 /// What the lowering made an instruction for, where it says so (counted by
 /// [`census`], nothing else reads it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum Tag {
     /// The select that keeps a register's old value in lanes a guard masks.
     Guard,
@@ -373,20 +372,19 @@ impl Module {
         g
     }
 
-    pub fn new_block(&mut self) -> usize {
-        self.blocks.push(Block::default());
-        self.blocks.len() - 1
-    }
-
     /// Notes what instruction `v` is for (see [`Tag`]); only when modules
     /// are counted.
-    #[allow(dead_code)]
     pub fn tag(&mut self, v: V, tag: Tag) {
         if let V::Inst(i) = v
             && census::enabled()
         {
             self.tags.insert(i, tag);
         }
+    }
+
+    pub fn new_block(&mut self) -> usize {
+        self.blocks.push(Block::default());
+        self.blocks.len() - 1
     }
 
     pub fn type_of(&self, v: V) -> Ty {

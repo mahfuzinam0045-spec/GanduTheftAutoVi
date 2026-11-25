@@ -155,6 +155,8 @@ fn translate_via_xcl(container: &[u8]) -> Result<HostShader, String> {
         static_samplers,
         root_cbvs: Vec::new(),
         root_srvs: Vec::new(),
+        root_uavs: Vec::new(),
+        root_indexed_views: Vec::new(),
     })
 }
 
@@ -292,9 +294,21 @@ fn encode(s: &HostShader, xcl_abi: bool) -> Vec<u8> {
             word(&mut out, v);
         }
     }
-    for slots in [&s.root_cbvs, &s.root_srvs] {
+    for slots in [&s.root_cbvs, &s.root_srvs, &s.root_uavs] {
         word(&mut out, slots.len() as u32);
         out.extend(slots);
+    }
+    word(&mut out, s.root_indexed_views.len() as u32);
+    for view in &s.root_indexed_views {
+        for value in [
+            u32::from(view.table_slot),
+            u32::from(view.constant_slot),
+            view.constant_dword,
+            view.byte_offset,
+            u32::from(view.shift),
+        ] {
+            word(&mut out, value);
+        }
     }
     word(&mut out, u32::from(xcl_abi));
     out
@@ -353,6 +367,18 @@ fn decode(bytes: &[u8]) -> Option<(HostShader, bool)> {
     }
     let root_cbvs = r.list()?;
     let root_srvs = r.list()?;
+    let root_uavs = r.list()?;
+    let n = r.word()? as usize;
+    let mut root_indexed_views = Vec::with_capacity(n.min(256));
+    for _ in 0..n {
+        root_indexed_views.push(victory_shader::resource::RootIndexedView {
+            table_slot: u8::try_from(r.word()?).ok()?,
+            constant_slot: u8::try_from(r.word()?).ok()?,
+            constant_dword: r.word()?,
+            byte_offset: r.word()?,
+            shift: u8::try_from(r.word()?).ok()?,
+        });
+    }
     let xcl_abi = r.word()? != 0;
     r.0.is_empty().then_some((
         HostShader {
@@ -363,6 +389,8 @@ fn decode(bytes: &[u8]) -> Option<(HostShader, bool)> {
             static_samplers,
             root_cbvs,
             root_srvs,
+            root_uavs,
+            root_indexed_views,
         },
         xcl_abi,
     ))
@@ -391,6 +419,8 @@ mod tests {
             ])],
             root_cbvs: vec![2],
             root_srvs: vec![0, 3],
+            root_uavs: Vec::new(),
+            root_indexed_views: Vec::new(),
         }
     }
 
