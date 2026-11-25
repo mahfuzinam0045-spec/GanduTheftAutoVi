@@ -6,6 +6,7 @@
 //! hardware decompression.
 
 pub mod bcpack;
+pub mod rbf0;
 pub mod rpf9;
 pub mod texture;
 pub mod tiling;
