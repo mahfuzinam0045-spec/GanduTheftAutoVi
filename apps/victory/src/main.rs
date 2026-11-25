@@ -115,6 +115,11 @@ enum Command {
     },
     /// Show the resolved configuration and check it.
     Config,
+    /// Verify a user-supplied Xbox Series 1.0.2.1 game folder against the manifest.
+    VerifyPackage {
+        /// Package root directory (defaults to configured `game_dir`).
+        dir: Option<PathBuf>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -227,6 +232,7 @@ fn main() -> Result<()> {
         },
         Command::Xcl { action } => run_xcl_action(action),
         Command::Config => show_config(),
+        Command::VerifyPackage { dir } => verify_package(dir),
     }
 }
 
@@ -355,6 +361,35 @@ pub(crate) fn default_paths(paths: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
     Ok(all)
 }
 
+fn verify_package(dir: Option<PathBuf>) -> Result<()> {
+    let root = match dir {
+        Some(d) => d,
+        None => victory_core::Config::load()?
+            .game_dir
+            .ok_or_else(|| anyhow::anyhow!("no directory given and `game_dir` is not configured"))?,
+    };
+    let manifest = &victory_game::manifest::XBOX_1_0_2_1;
+    let report = victory_game::manifest::verify_package_dir(&root, manifest);
+    println!(
+        "{} {} ({}): {}/{} ok, {} missing, {} size mismatch(es)",
+        manifest.title,
+        manifest.version,
+        root.display(),
+        report.present,
+        manifest.files.len(),
+        report.missing.len(),
+        report.size_mismatches.len(),
+    );
+    for m in &report.missing {
+        println!("  missing: {m}");
+    }
+    for (path, expected, actual) in &report.size_mismatches {
+        println!("  size mismatch: {path} (expected {expected} B, got {actual} B)");
+    }
+    anyhow::ensure!(report.is_complete(), "package verification failed");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -407,6 +442,21 @@ mod tests {
             Command::Xcl {
                 action: XclAction::CacheStats
             }
+        ));
+    }
+
+    #[test]
+    fn cli_parses_verify_package() {
+        let with_dir = Cli::try_parse_from(["victory", "verify-package", "C:\\game"]).unwrap();
+        match with_dir.command {
+            Command::VerifyPackage { dir } => assert_eq!(dir, Some(PathBuf::from("C:\\game"))),
+            _ => panic!("expected VerifyPackage command"),
+        }
+
+        let default_dir = Cli::try_parse_from(["victory", "verify-package"]).unwrap();
+        assert!(matches!(
+            default_dir.command,
+            Command::VerifyPackage { dir: None }
         ));
     }
 }
