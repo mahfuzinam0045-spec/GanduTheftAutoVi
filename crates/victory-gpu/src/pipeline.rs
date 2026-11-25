@@ -420,6 +420,62 @@ fn subobject(kind: u32) -> Option<(usize, Option<&'static str>)> {
     }
 }
 
+/// One `0x14c`-byte `CreateDerivedPipelineStateX` patch record: `u32` tag + `0x148`-byte payload.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct DerivedRecord {
+    pub(crate) tag: u32,
+    pub(crate) payload: [u8; 0x148],
+}
+const _: () = assert!(size_of::<DerivedRecord>() == 0x14c);
+
+/// Device method (slot 55): derive a pipeline from `base` by patching up to 4 state records.
+pub(crate) extern "system" fn create_derived(
+    _: This,
+    base: This,
+    count: u32,
+    records: *const DerivedRecord,
+    iid: *const Iid,
+    out: *mut This,
+) -> HRESULT {
+    if !out.is_null() {
+        // SAFETY: caller provides writable `out` pointer.
+        unsafe { *out = std::ptr::null() };
+    }
+    if base.is_null() || records.is_null() || !(1..=4).contains(&count) {
+        return E_INVALIDARG;
+    }
+    let base_pipeline = pipeline(base);
+    // SAFETY: `records` points to `count` contiguous `DerivedRecord` entries.
+    let recs = unsafe { std::slice::from_raw_parts(records, count as usize) };
+    #[cfg(windows)]
+    let graphics = {
+        let Some(base_gfx) = base_pipeline.host.graphics.as_deref() else {
+            return E_INVALIDARG;
+        };
+        let mut patched = Box::new(base_gfx.clone());
+        for rec in recs {
+            if !patched.apply_derived_record(rec.tag, &rec.payload) {
+                return E_INVALIDARG;
+            }
+        }
+        Some(patched)
+    };
+    #[cfg(not(windows))]
+    for rec in recs {
+        if !matches!(rec.tag, 0..=3 | 5) {
+            return E_INVALIDARG;
+        }
+    }
+    hand_out(
+        base_pipeline.shaders.clone(),
+        #[cfg(windows)]
+        graphics,
+        iid,
+        out,
+    )
+}
+
 /// Device method: a pipeline from a stream; the shaders are kept, and the
 /// graphics state for the host pipeline.
 pub(crate) extern "system" fn create_stream(

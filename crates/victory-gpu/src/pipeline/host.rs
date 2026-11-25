@@ -35,6 +35,75 @@ pub(crate) struct GraphicsState {
     samples: DXGI_SAMPLE_DESC,
 }
 
+impl Clone for GraphicsState {
+    fn clone(&self) -> Self {
+        let names = self.names.clone();
+        let mut inputs = self.inputs.clone();
+        for (input, name) in inputs.iter_mut().zip(&names) {
+            input.SemanticName = PCSTR(name.as_ptr().cast());
+        }
+        Self {
+            blend: self.blend,
+            sample_mask: self.sample_mask,
+            rasterizer: self.rasterizer,
+            depth: self.depth,
+            depth_bounds_test: self.depth_bounds_test,
+            inputs,
+            names,
+            strip_cut: self.strip_cut,
+            topology: self.topology,
+            targets: self.targets,
+            depth_format: self.depth_format,
+            samples: self.samples,
+        }
+    }
+}
+
+impl GraphicsState {
+    /// Applies one `0x14c`-byte `CreateDerivedPipelineStateX` patch record.
+    /// Returns `false` if `tag` is unknown.
+    pub(crate) fn apply_derived_record(&mut self, tag: u32, payload: &[u8; 0x148]) -> bool {
+        match tag {
+            0 => {
+                // SAFETY: `D3D12_DEPTH_STENCIL_DESC` is POD (`0x34` bytes <= `0x148`).
+                self.depth = unsafe {
+                    payload
+                        .as_ptr()
+                        .cast::<D3D12_DEPTH_STENCIL_DESC>()
+                        .read_unaligned()
+                };
+                true
+            }
+            1 => {
+                // SAFETY: `D3D12_RASTERIZER_DESC` is POD (`0x2c` bytes <= `0x148`).
+                self.rasterizer = unsafe {
+                    payload
+                        .as_ptr()
+                        .cast::<D3D12_RASTERIZER_DESC>()
+                        .read_unaligned()
+                };
+                true
+            }
+            2 => {
+                // SAFETY: `D3D12_BLEND_DESC` is POD (`0x148` bytes).
+                self.blend = unsafe { payload.as_ptr().cast::<D3D12_BLEND_DESC>().read_unaligned() };
+                true
+            }
+            3 => {
+                self.sample_mask = u32::from_le_bytes(payload[0..4].try_into().unwrap());
+                true
+            }
+            5 => {
+                // Tag 5 overwrites only StencilReadMask (+0x10) and StencilWriteMask (+0x11).
+                self.depth.StencilReadMask = payload[0x10];
+                self.depth.StencilWriteMask = payload[0x11];
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
 impl Default for GraphicsState {
     fn default() -> Self {
         let target = D3D12_RENDER_TARGET_BLEND_DESC {
@@ -780,5 +849,32 @@ fn root_signature(
         let bytes =
             std::slice::from_raw_parts(blob.GetBufferPointer().cast::<u8>(), blob.GetBufferSize());
         Ok((device.CreateRootSignature(0, bytes)?, bytes.to_vec()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn derived_record_patches_stencil_masks_and_sample_mask_without_clobbering_depth_bounds() {
+        let mut state = GraphicsState {
+            depth_bounds_test: true,
+            ..Default::default()
+        };
+        let mut mask_rec = [0u8; 0x148];
+        mask_rec[0x10] = 0x3C;
+        mask_rec[0x11] = 0xA5;
+        assert!(state.apply_derived_record(5, &mask_rec));
+        assert_eq!(state.depth.StencilReadMask, 0x3C);
+        assert_eq!(state.depth.StencilWriteMask, 0xA5);
+        assert!(state.depth_bounds_test);
+
+        let mut sample_rec = [0u8; 0x148];
+        sample_rec[0..4].copy_from_slice(&0x0000_000Fu32.to_le_bytes());
+        assert!(state.apply_derived_record(3, &sample_rec));
+        assert_eq!(state.sample_mask, 0x0000_000F);
+
+        assert!(!state.apply_derived_record(99, &sample_rec));
     }
 }
