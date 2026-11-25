@@ -78,6 +78,54 @@ fn name_before(file: &[u8], nul: usize) -> Option<&str> {
         .and_then(|l| std::str::from_utf8(&file[l + 1..nul]).ok())
 }
 
+/// Pass record byte offset for the effect-local rasterizer state row index.
+pub const PASS_RASTERIZER_BYTE: usize = 6;
+/// Pass record byte offset for the effect-local depth/stencil state row index.
+pub const PASS_DEPTH_STENCIL_BYTE: usize = 7;
+/// Pass record byte offset for the effect-local blend state row index.
+pub const PASS_BLEND_BYTE: usize = 8;
+/// Row byte widths of the four effect-local render-state tables:
+/// `(rasterizer, depth_stencil, blend, fourth_table)`.
+pub const STATE_ROW_WIDTHS: [usize; 4] = [16, 24, 68, 36];
+
+/// Row counts for the four effect-local state tables in an SGD5 effect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StateTableCounts {
+    pub rasterizer: u32,
+    pub depth_stencil: u32,
+    pub blend: u32,
+    pub fourth: u32,
+}
+
+/// Zero-based state table row indices stored in bytes 6..=8 of a 24-byte SGD5 pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PassStateIndices {
+    pub rasterizer: Option<u8>,
+    pub depth_stencil: Option<u8>,
+    pub blend: Option<u8>,
+}
+
+impl PassStateIndices {
+    /// Reads pass state indices from a 24-byte pass record using `counts` to
+    /// distinguish an explicit row `0` from an empty table (`count == 0`).
+    pub fn from_pass(pass: &[u8; 24], counts: StateTableCounts) -> Option<Self> {
+        let idx = |b: u8, count: u32| -> Option<Option<u8>> {
+            if count == 0 {
+                (b == 0).then_some(None)
+            } else if u32::from(b) < count {
+                Some(Some(b))
+            } else {
+                None
+            }
+        };
+        Some(Self {
+            rasterizer: idx(pass[PASS_RASTERIZER_BYTE], counts.rasterizer)?,
+            depth_stencil: idx(pass[PASS_DEPTH_STENCIL_BYTE], counts.depth_stencil)?,
+            blend: idx(pass[PASS_BLEND_BYTE], counts.blend)?,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,5 +180,30 @@ mod tests {
         file[27] = 0xFF; // first packed byte: reserved block type
         let r = records(&file).next().unwrap();
         assert_eq!(r.unpack(), None);
+    }
+
+    #[test]
+    fn pass_state_indices_distinguish_empty_and_zero_row() {
+        let mut pass = [0u8; 24];
+        pass[PASS_RASTERIZER_BYTE] = 0;
+        pass[PASS_DEPTH_STENCIL_BYTE] = 2;
+        pass[PASS_BLEND_BYTE] = 1;
+        let counts = StateTableCounts {
+            rasterizer: 0,
+            depth_stencil: 3,
+            blend: 2,
+            fourth: 0,
+        };
+        assert_eq!(
+            PassStateIndices::from_pass(&pass, counts),
+            Some(PassStateIndices {
+                rasterizer: None,
+                depth_stencil: Some(2),
+                blend: Some(1),
+            })
+        );
+        // Out-of-bounds index is rejected.
+        pass[PASS_BLEND_BYTE] = 2;
+        assert_eq!(PassStateIndices::from_pass(&pass, counts), None);
     }
 }

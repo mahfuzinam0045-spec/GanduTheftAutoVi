@@ -3,6 +3,7 @@
 //! offsets or byte-pattern signatures). What may and may not be stored here
 //! is defined in docs/asset-policy.md.
 
+pub mod manifest;
 pub mod sgd5;
 
 /// A specific build of the Grand Theft Auto VI executable we know how to run.
