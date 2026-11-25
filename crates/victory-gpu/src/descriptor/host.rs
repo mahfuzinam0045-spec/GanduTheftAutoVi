@@ -1068,7 +1068,7 @@ impl HostHeap {
         let mut run = 0;
         let mut found = None;
         let mut last = usize::MAX;
-        for at in starts.take(if enough { DYNAMIC as usize } else { 0 }) {
+        for at in starts.take(if enough { usize::MAX } else { 0 }) {
             // A run cannot wrap past the end.
             if at != last.wrapping_add(1) {
                 run = 0;
@@ -2701,6 +2701,10 @@ fn twin_uav(
     Some(desc)
 }
 
+pub(crate) fn constant_view_bytes(requested: u32) -> u32 {
+    requested.min(D3D12_REQ_CONSTANT_BUFFER_ELEMENT_COUNT * 16)
+}
+
 /// Makes the host descriptor for `view` at `at`: the host resource it
 /// views, or `None` if it cannot.
 fn make(view: &View, at: D3D12_CPU_DESCRIPTOR_HANDLE) -> Option<Kept> {
@@ -2708,6 +2712,10 @@ fn make(view: &View, at: D3D12_CPU_DESCRIPTOR_HANDLE) -> Option<Kept> {
     let device = &host.device;
     match view {
         &View::Constant(address, size) => {
+            let size = constant_view_bytes(size).next_multiple_of(D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+            if size == 0 || address == 0 {
+                return None;
+            }
             let shadow = crate::shadow::find(address, u64::from(size))?;
             let gpu = shadow.gpu(address);
             if gpu % 256 != 0 {
@@ -2719,7 +2727,7 @@ fn make(view: &View, at: D3D12_CPU_DESCRIPTOR_HANDLE) -> Option<Kept> {
             }
             let desc = D3D12_CONSTANT_BUFFER_VIEW_DESC {
                 BufferLocation: gpu,
-                SizeInBytes: size.next_multiple_of(256),
+                SizeInBytes: size,
             };
             // SAFETY: a slot of our heap; the range lies in the host copy.
             unsafe { device.CreateConstantBufferView(Some(&desc), at) };
@@ -3353,6 +3361,19 @@ mod tests {
         assert!(spans.note(8, at + 0x900, at + 0x2900, false).is_empty());
         assert_eq!(spans.by_slot.get(&8), None);
         assert_eq!(spans.by_slot.len(), 3);
+    }
+
+    #[test]
+    fn constant_view_from_world_load_fits_the_device() {
+        assert_eq!(constant_view_bytes(1_087_744), 65_536);
+        assert_eq!(constant_view_bytes(u32::MAX), 65_536);
+        assert_eq!(constant_view_bytes(320), 320);
+        let Some(host) = host() else { return };
+        let heap = HostHeap::new(false, 4).unwrap();
+        let data = vec![0u8; 128 * 1024];
+        let address = (data.as_ptr() as u64).next_multiple_of(65_536);
+        assert!(make(&View::Constant(address, 1_087_744), heap.cpu(0)).is_some());
+        assert!(unsafe { host.device.GetDeviceRemovedReason() }.is_ok());
     }
 
     /// A slot written with another texture leaves its old span; the same
