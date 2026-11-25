@@ -312,6 +312,21 @@ fn translate(
     let Some(bytes) = source.bytes() else {
         return t.fail("corrupt record".into(), example);
     };
+    let hash = blake3::hash(&bytes).to_hex()[..16].to_owned();
+    // Diagnostics: `VICTORY_TRANSLATE_ONLY=<hash prefix>,...` translates those containers alone.
+    static ONLY: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    let only = ONLY.get_or_init(|| {
+        std::env::var("VICTORY_TRANSLATE_ONLY")
+            .unwrap_or_default()
+            .split(',')
+            .map(|h| h.trim().to_lowercase())
+            .filter(|h| !h.is_empty())
+            .collect()
+    });
+    if !only.is_empty() && !only.iter().any(|o| hash.starts_with(o.as_str())) {
+        return;
+    }
+    let example = || format!("{}{} #{hash}", path.display(), source.label());
     t.containers += 1;
     let Ok(container) = Container::parse(&bytes) else {
         return t.fail("no DXIL part (SM5 or older)".into(), example);
